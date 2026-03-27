@@ -705,7 +705,7 @@
         "expect": "7개 tool 정의 (run, install, search, list, init, cache_clean, registry_update) 모두 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 18,
     "scores": null
