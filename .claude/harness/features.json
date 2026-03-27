@@ -500,7 +500,7 @@
         "expect": "레지스트리 source.buildPath + source.product 필드 사용 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 13,
     "scores": null
