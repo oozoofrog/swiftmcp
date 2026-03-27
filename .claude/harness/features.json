@@ -421,7 +421,7 @@
         "expect": "확인 프롬프트 출력 또는 비TTY 환경에서 abort 메시지 (crash 없음)"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 11,
     "scores": null
