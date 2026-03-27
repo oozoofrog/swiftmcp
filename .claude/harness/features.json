@@ -110,7 +110,7 @@
         "expect": "네트워크 실패 시 캐시 폴백 로직 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 3,
     "scores": null
