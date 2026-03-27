@@ -194,7 +194,7 @@
         "expect": "압축 해제/다운로드 실패 에러 케이스 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 5,
     "scores": null
