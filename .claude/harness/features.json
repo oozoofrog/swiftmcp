@@ -236,7 +236,7 @@
         "expect": "run 커맨드 도움말 출력 (exit:0 또는 exit:1 허용, 단 crash 없음)"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 6,
     "scores": null
