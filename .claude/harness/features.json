@@ -584,7 +584,7 @@
         "expect": "'Package not found' + 'swiftmcp search' 안내 메시지 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 15,
     "scores": null
