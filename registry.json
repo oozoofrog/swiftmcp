@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "servers": {
+    "swift-yf-tools": {
+      "repo": "oozoofrog/swift-yf-tools",
+      "description": "Yahoo Finance API MCP Server for Swift",
+      "executable": "swift-yf-tools",
+      "platforms": {
+        "macos-arm64": {
+          "artifact": "swift-yf-tools-macos-arm64.tar.gz"
+        },
+        "macos-x86_64": {
+          "artifact": "swift-yf-tools-macos-x86_64.tar.gz"
+        }
+      },
+      "source": {
+        "buildPath": "CLI",
+        "buildCommand": "swift build -c release",
+        "product": "swift-yf-tools"
+      }
+    },
+    "swiftmcp": {
+      "repo": "oozoofrog/swiftmcp",
+      "description": "Swift MCP Platform — 런타임, 생성기, MCP 서버",
+      "executable": "swiftmcp",
+      "platforms": {
+        "macos-arm64": {
+          "artifact": "swiftmcp-macos-arm64.tar.gz"
+        },
+        "macos-x86_64": {
+          "artifact": "swiftmcp-macos-x86_64.tar.gz"
+        }
+      },
+      "source": {
+        "buildPath": ".",
+        "buildCommand": "swift build -c release",
+        "product": "swiftmcp"
+      }
+    }
+  }
+}

@@ -542,7 +542,7 @@
         "expect": "macos-arm64, macos-x86_64 플랫폼 키 존재"
       }
     ],
-    "status": "pending",
+    "status": "built",
     "reference": null,
     "priority": 14,
     "scores": null
