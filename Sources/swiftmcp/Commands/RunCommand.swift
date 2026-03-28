@@ -23,6 +23,11 @@ struct RunCommand: AsyncParsableCommand {
     mutating func run() async throws {
         let stderr = StderrWriter()
 
+        // 서버 인수 결합: 레지스트리 args + 사용자 passthrough
+        func buildArguments(for entry: ServerEntry) -> [String] {
+            (entry.args ?? []) + passthroughArguments
+        }
+
         // 레지스트리 로드
         stderr.write("레지스트리에서 '\(name)' 조회 중...")
         let registryClient = RegistryClient()
@@ -58,7 +63,7 @@ struct RunCommand: AsyncParsableCommand {
                 let runner = ProcessRunner()
                 let exitCode = try runner.run(
                     executableURL: URL(fileURLWithPath: binaryPath),
-                    arguments: passthroughArguments
+                    arguments: buildArguments(for: serverEntry)
                 )
                 throw ExitCode(exitCode)
             } catch let exitError as ExitCode {

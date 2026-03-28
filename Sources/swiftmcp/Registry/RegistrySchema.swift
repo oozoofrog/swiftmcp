@@ -21,6 +21,8 @@ nonisolated struct ServerEntry: Codable, Sendable {
     let description: String
     /// 실행 파일 이름 (바이너리 이름)
     let executable: String
+    /// MCP 서버 시작에 필요한 추가 인수 (e.g. ["mcp", "serve"])
+    let args: [String]?
     /// 플랫폼별 artifact 정보
     let platforms: [String: PlatformEntry]
     /// 소스 빌드 정보 (옵션: 바이너리가 없을 때 소스 폴백)

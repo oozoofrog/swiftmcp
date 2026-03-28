@@ -5,6 +5,7 @@
       "repo": "oozoofrog/swift-yf-tools",
       "description": "Yahoo Finance API MCP Server for Swift",
       "executable": "swift-yf-tools",
+      "args": ["mcp", "serve"],
       "platforms": {
         "macos-arm64": {
           "artifact": "swift-yf-tools-macos-arm64.tar.gz"
@@ -23,6 +24,7 @@
       "repo": "oozoofrog/swiftmcp",
       "description": "Swift MCP Platform — 런타임, 생성기, MCP 서버",
       "executable": "swiftmcp",
+      "args": ["mcp"],
       "platforms": {
         "macos-arm64": {
           "artifact": "swiftmcp-macos-arm64.tar.gz"

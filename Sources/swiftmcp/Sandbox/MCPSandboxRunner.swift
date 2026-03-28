@@ -57,7 +57,9 @@ nonisolated struct MCPSandboxRunner: Sendable {
             throw error
         }
 
-        printStepOK("'\(packageName)' (\(resolvedVersion)) 조회 완료")
+        // 서버 시작 인수 (e.g. ["mcp", "serve"])
+        let mcpArgs = serverEntry.args ?? []
+        printStepOK("'\(packageName)' (\(resolvedVersion)) 조회 완료\(mcpArgs.isEmpty ? "" : " args: \(mcpArgs.joined(separator: " "))")")
 
         // MARK: - 단계 2: 샌드박스 디렉토리 생성
 
@@ -132,7 +134,7 @@ nonisolated struct MCPSandboxRunner: Sendable {
 
         let probeResult: MCPProbeResult
         do {
-            probeResult = try await probe.probe(binaryPath: binaryPath)
+            probeResult = try await probe.probe(binaryPath: binaryPath, args: mcpArgs)
         } catch {
             printStepFail("프로토콜 검증 실패: \(error.localizedDescription)")
             throw error

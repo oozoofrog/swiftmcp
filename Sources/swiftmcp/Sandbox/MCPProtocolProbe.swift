@@ -50,10 +50,13 @@ nonisolated struct MCPProtocolProbe: Sendable {
     }
 
     /// MCP 서버 바이너리를 Pipe 방식으로 실행하여 4단계 JSON-RPC 시퀀스 실행
-    func probe(binaryPath: String) async throws -> MCPProbeResult {
+    /// - Parameters:
+    ///   - binaryPath: 실행 파일 경로
+    ///   - args: MCP 서버 시작에 필요한 추가 인수 (e.g. ["mcp", "serve"])
+    func probe(binaryPath: String, args: [String] = []) async throws -> MCPProbeResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
-        process.arguments = []
+        process.arguments = args
 
         // stdin/stdout을 Pipe로 연결
         let stdinPipe = Pipe()
