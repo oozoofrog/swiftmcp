@@ -1,6 +1,6 @@
 // ListCommand.swift
-// `swiftmcp list` 구현
-// ~/.swiftmcp/cache/ 디렉토리를 스캔하여 설치된 패키지 목록 출력
+// `mcpswx list` 구현
+// ~/.mcpswx/cache/ 디렉토리를 스캔하여 설치된 패키지 목록 출력
 
 import ArgumentParser
 import Foundation
@@ -10,7 +10,7 @@ struct ListCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
         abstract: "설치된 MCP 서버 목록을 출력합니다.",
-        usage: "swiftmcp list [--json]"
+        usage: "mcpswx list [--json]"
     )
 
     @Flag(name: .long, help: "JSON 형식으로 출력 (기계 판독 가능)")
@@ -41,7 +41,7 @@ struct ListCommand: AsyncParsableCommand {
             } else {
                 print(message)
             }
-            print("설치하려면: swiftmcp install <name>")
+            print("설치하려면: mcpswx install <name>")
             return
         }
 

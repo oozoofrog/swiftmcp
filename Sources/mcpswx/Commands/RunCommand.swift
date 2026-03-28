@@ -1,5 +1,5 @@
 // RunCommand.swift
-// `swiftmcp run <name> [-- args...]` 구현
+// `mcpswx run <name> [-- args...]` 구현
 // 핵심 플로우: 레지스트리 조회 → BinaryResolver → CacheManager → ProcessRunner
 
 import ArgumentParser
@@ -10,7 +10,7 @@ struct RunCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "run",
         abstract: "레지스트리에서 MCP 서버를 즉시 실행합니다.",
-        usage: "swiftmcp run <name> [-- <server-args>...]"
+        usage: "mcpswx run <name> [-- <server-args>...]"
     )
 
     @Argument(help: "실행할 MCP 서버 이름 (레지스트리에 등록된 이름)")
@@ -41,7 +41,7 @@ struct RunCommand: AsyncParsableCommand {
 
         guard let serverEntry = registry.servers[name] else {
             stderr.writeError("Package not found in registry: '\(name)'")
-            stderr.write("Try: swiftmcp search <query>")
+            stderr.write("Try: mcpswx search <query>")
             throw ExitCode.failure
         }
 

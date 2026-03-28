@@ -8,12 +8,12 @@ import Foundation
 nonisolated struct RegistryClient: Sendable {
 
     /// 레지스트리 원격 URL
-    static let registryURL = "https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/registry.json"
+    static let registryURL = "https://raw.githubusercontent.com/oozoofrog/mcpswx/main/registry.json"
 
     /// 로컬 캐시 디렉토리
     static var cacheDirectory: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.swiftmcp/registry"
+        return "\(home)/.mcpswx/registry"
     }
 
     /// 캐시 파일 경로
@@ -56,16 +56,16 @@ nonisolated struct RegistryClient: Sendable {
     /// 네트워크에서 레지스트리 JSON fetch
     private func fetchFromNetwork() async throws -> RegistryEntry {
         guard let url = URL(string: Self.registryURL) else {
-            throw SwiftMCPError.networkError("잘못된 레지스트리 URL")
+            throw MCPSWXError.networkError("잘못된 레지스트리 URL")
         }
 
         let (data, response) = try await URLSession.shared.data(from: url)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw SwiftMCPError.networkError("레지스트리 서버 응답 오류 (HTTP 응답 없음)")
+            throw MCPSWXError.networkError("레지스트리 서버 응답 오류 (HTTP 응답 없음)")
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            throw SwiftMCPError.networkError("레지스트리 서버 응답 오류 (HTTP \(httpResponse.statusCode))")
+            throw MCPSWXError.networkError("레지스트리 서버 응답 오류 (HTTP \(httpResponse.statusCode))")
         }
 
         let decoder = JSONDecoder()

@@ -18,7 +18,7 @@ nonisolated struct InstalledServerChecker: DoctorCheck, Sendable {
                 name: name,
                 status: .warning,
                 message: "설치된 MCP 서버 없음",
-                detail: "swiftmcp install <name> 으로 설치하세요."
+                detail: "mcpswx install <name> 으로 설치하세요."
             )]
         }
 

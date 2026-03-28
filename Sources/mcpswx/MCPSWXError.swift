@@ -1,11 +1,11 @@
-// SwiftMCPError.swift
+// MCPSWXError.swift
 // 에러 처리 및 진단 메시지
 // 사람이 읽기 좋은 에러 메시지 + stderr 출력
 
 import Foundation
 
-/// swiftmcp 에러 타입
-enum SwiftMCPError: Error, LocalizedError, Sendable {
+/// mcpswx 에러 타입
+enum MCPSWXError: Error, LocalizedError, Sendable {
     /// 네트워크 오류 (URLSession 실패, HTTP 오류)
     case networkError(String)
     /// 레지스트리에 등록되지 않은 패키지
@@ -57,36 +57,36 @@ nonisolated struct StderrWriter: Sendable {
     /// 일반 메시지 출력 (stderr)
     func write(_ message: String) {
         if isTTY {
-            fputs(ANSIStyle.dim + "swiftmcp: " + ANSIStyle.reset + message + "\n", stderr)
+            fputs(ANSIStyle.dim + "mcpswx: " + ANSIStyle.reset + message + "\n", stderr)
         } else {
-            fputs("swiftmcp: " + message + "\n", stderr)
+            fputs("mcpswx: " + message + "\n", stderr)
         }
     }
 
     /// 에러 메시지 출력 (stderr, 빨간색)
     func writeError(_ message: String) {
         if isTTY {
-            fputs(ANSIStyle.red + "swiftmcp: error: " + ANSIStyle.reset + message + "\n", stderr)
+            fputs(ANSIStyle.red + "mcpswx: error: " + ANSIStyle.reset + message + "\n", stderr)
         } else {
-            fputs("swiftmcp: error: " + message + "\n", stderr)
+            fputs("mcpswx: error: " + message + "\n", stderr)
         }
     }
 
     /// 성공 메시지 출력 (stderr, 초록색)
     func writeSuccess(_ message: String) {
         if isTTY {
-            fputs(ANSIStyle.green + "swiftmcp: " + ANSIStyle.reset + message + "\n", stderr)
+            fputs(ANSIStyle.green + "mcpswx: " + ANSIStyle.reset + message + "\n", stderr)
         } else {
-            fputs("swiftmcp: " + message + "\n", stderr)
+            fputs("mcpswx: " + message + "\n", stderr)
         }
     }
 
     /// 경고 메시지 출력 (stderr, 노란색)
     func writeWarning(_ message: String) {
         if isTTY {
-            fputs(ANSIStyle.yellow + "swiftmcp: warning: " + ANSIStyle.reset + message + "\n", stderr)
+            fputs(ANSIStyle.yellow + "mcpswx: warning: " + ANSIStyle.reset + message + "\n", stderr)
         } else {
-            fputs("swiftmcp: warning: " + message + "\n", stderr)
+            fputs("mcpswx: warning: " + message + "\n", stderr)
         }
     }
 }

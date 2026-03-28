@@ -1,7 +1,7 @@
 // RegistryCommand.swift
-// `swiftmcp registry` 서브커맨드 그룹
-// `swiftmcp registry show` — URL/캐시 정보/서버 수 출력
-// `swiftmcp registry update` — 강제 갱신 (캐시 무시)
+// `mcpswx registry` 서브커맨드 그룹
+// `mcpswx registry show` — URL/캐시 정보/서버 수 출력
+// `mcpswx registry update` — 강제 갱신 (캐시 무시)
 
 import ArgumentParser
 import Foundation

@@ -1,5 +1,5 @@
 // MCPTools.swift
-// swiftmcp MCP 서버의 7개 tool 정의 및 실행 로직
+// mcpswx MCP 서버의 7개 tool 정의 및 실행 로직
 // run, install, search, list, init, cache_clean, registry_update
 
 import Foundation
@@ -16,7 +16,7 @@ nonisolated struct MCPTools: Sendable {
                 "tools": .object([:])
             ]),
             "serverInfo": .object([
-                "name": .string("swiftmcp"),
+                "name": .string("mcpswx"),
                 "version": .string("1.0.0")
             ])
         ])
@@ -115,7 +115,7 @@ nonisolated struct MCPTools: Sendable {
             return makeError("name 인수가 필요합니다")
         }
 
-        return makeText("swiftmcp run \(name) — MCP 서버는 직접 실행해야 합니다.\n사용법: swiftmcp run \(name)")
+        return makeText("mcpswx run \(name) — MCP 서버는 직접 실행해야 합니다.\n사용법: mcpswx run \(name)")
     }
 
     private func handleInstall(arguments: JSONValue?) async -> JSONValue {
@@ -132,7 +132,7 @@ nonisolated struct MCPTools: Sendable {
         }
 
         guard let entry = registry.servers[name] else {
-            return makeError("Package not found in registry: '\(name)'. Try: swiftmcp search <query>")
+            return makeError("Package not found in registry: '\(name)'. Try: mcpswx search <query>")
         }
 
         let binaryResolver = BinaryResolver()
@@ -185,7 +185,7 @@ nonisolated struct MCPTools: Sendable {
             output += "\n  \(name)\n"
             output += "  설명: \(entry.description)\n"
             output += "  저장소: \(entry.repo)\n"
-            output += "  실행: swiftmcp run \(name)\n"
+            output += "  실행: mcpswx run \(name)\n"
         }
 
         return makeText(output)
@@ -196,7 +196,7 @@ nonisolated struct MCPTools: Sendable {
         let packages = cacheManager.listInstalledPackages()
 
         if packages.isEmpty {
-            return makeText("No packages installed.\n설치하려면: swiftmcp install <name>")
+            return makeText("No packages installed.\n설치하려면: mcpswx install <name>")
         }
 
         var output = "설치된 MCP 서버 (\(packages.count)개):\n"

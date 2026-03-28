@@ -50,6 +50,6 @@ protocol DoctorCheck: Sendable {
 // MARK: - 체커 구현 (nonisolated struct 선언 위치 표시)
 // SwiftToolchainChecker.swift — swift --version 실행 및 버전 파싱
 // NetworkChecker.swift       — github.com, raw.githubusercontent.com 연결 확인
-// CacheChecker.swift         — ~/.swiftmcp/ 캐시 상태 확인
+// CacheChecker.swift         — ~/.mcpswx/ 캐시 상태 확인
 // InstalledServerChecker.swift — 설치된 MCP 서버 바이너리 상태 확인
 // RegistryChecker.swift      — 레지스트리 접근성 및 서버 수 확인

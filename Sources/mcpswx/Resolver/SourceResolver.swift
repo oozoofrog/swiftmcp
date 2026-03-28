@@ -11,11 +11,11 @@ nonisolated struct SourceResolver: Sendable {
     /// - Returns: 캐시된 binary 경로
     func build(entry: ServerEntry, name: String) async throws -> String {
         guard let source = entry.source else {
-            throw SwiftMCPError.sourceBuildFailed("'\(name)'에 source 빌드 정보가 없습니다.")
+            throw MCPSWXError.sourceBuildFailed("'\(name)'에 source 빌드 정보가 없습니다.")
         }
 
         // 임시 디렉토리에 git clone
-        let tmpDir = "\(NSTemporaryDirectory())swiftmcp-src-\(name)-\(UUID().uuidString)"
+        let tmpDir = "\(NSTemporaryDirectory())mcpswx-src-\(name)-\(UUID().uuidString)"
         let fm = FileManager.default
 
         defer {
@@ -45,7 +45,7 @@ nonisolated struct SourceResolver: Sendable {
         // 공백 기준으로 split하여 인수 배열 생성
         var buildArgs = rawCommand.split(separator: " ").map(String.init)
         guard let buildExecutableName = buildArgs.first else {
-            throw SwiftMCPError.sourceBuildFailed("buildCommand 파싱 실패: '\(rawCommand)'")
+            throw MCPSWXError.sourceBuildFailed("buildCommand 파싱 실패: '\(rawCommand)'")
         }
         buildArgs.removeFirst()
 
@@ -71,7 +71,7 @@ nonisolated struct SourceResolver: Sendable {
         // 빌드된 바이너리 경로
         let builtBinaryPath = "\(buildDir)/.build/release/\(source.product)"
         guard fm.fileExists(atPath: builtBinaryPath) else {
-            throw SwiftMCPError.sourceBuildFailed(
+            throw MCPSWXError.sourceBuildFailed(
                 "빌드 완료 후 '\(source.product)' 바이너리를 찾을 수 없습니다."
             )
         }
@@ -121,7 +121,7 @@ nonisolated struct SourceResolver: Sendable {
                     if p.terminationStatus == 0 {
                         continuation.resume()
                     } else {
-                        continuation.resume(throwing: SwiftMCPError.sourceBuildFailed(
+                        continuation.resume(throwing: MCPSWXError.sourceBuildFailed(
                             "\(executable) 실패 (exit code: \(p.terminationStatus))"
                         ))
                     }
@@ -129,7 +129,7 @@ nonisolated struct SourceResolver: Sendable {
 
                 try process.run()
             } catch {
-                continuation.resume(throwing: SwiftMCPError.sourceBuildFailed(
+                continuation.resume(throwing: MCPSWXError.sourceBuildFailed(
                     "프로세스 실행 실패: \(error)"
                 ))
             }

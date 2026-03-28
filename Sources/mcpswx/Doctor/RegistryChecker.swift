@@ -23,7 +23,7 @@ nonisolated struct RegistryChecker: DoctorCheck, Sendable {
                 detail: RegistryClient.registryURL
             )]
 
-        } catch let error as SwiftMCPError {
+        } catch let error as MCPSWXError {
             switch error {
             case .networkError(let msg):
                 // 네트워크 실패 → fail

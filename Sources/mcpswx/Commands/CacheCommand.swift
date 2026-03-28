@@ -1,6 +1,6 @@
 // CacheCommand.swift
-// `swiftmcp cache` 서브커맨드 그룹
-// `swiftmcp cache clean [--name <name>] [--yes]` 구현
+// `mcpswx cache` 서브커맨드 그룹
+// `mcpswx cache clean [--name <name>] [--yes]` 구현
 
 import ArgumentParser
 import Foundation
@@ -19,7 +19,7 @@ struct CacheCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "clean",
             abstract: "캐시를 삭제합니다.",
-            usage: "swiftmcp cache clean [--name <name>] [--yes]"
+            usage: "mcpswx cache clean [--name <name>] [--yes]"
         )
 
         @Option(name: .long, help: "삭제할 특정 패키지 이름 (미지정 시 전체 삭제)")
@@ -40,7 +40,7 @@ struct CacheCommand: AsyncParsableCommand {
                 if !isTTY {
                     // 비TTY 환경에서는 --yes 없이 삭제 불가
                     stderr.writeError("비대화형 환경에서는 --yes 플래그가 필요합니다.")
-                    stderr.write("사용법: swiftmcp cache clean --yes")
+                    stderr.write("사용법: mcpswx cache clean --yes")
                     throw ExitCode.failure
                 }
                 print("\(targetDesc)를 삭제하시겠습니까? [y/N] ", terminator: "")

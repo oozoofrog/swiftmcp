@@ -1,5 +1,5 @@
 // InitCommand.swift
-// `swiftmcp init` 인터랙티브 TUI 프로젝트 생성기
+// `mcpswx init` 인터랙티브 TUI 프로젝트 생성기
 // MCP 서버 스켈레톤 프로젝트를 생성한다.
 
 import ArgumentParser
@@ -10,7 +10,7 @@ struct InitCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "init",
         abstract: "새 MCP 서버 Swift 프로젝트를 생성합니다.",
-        usage: "swiftmcp init [--name <name>] [--non-interactive]"
+        usage: "mcpswx init [--name <name>] [--non-interactive]"
     )
 
     @Option(name: .long, help: "프로젝트 이름")

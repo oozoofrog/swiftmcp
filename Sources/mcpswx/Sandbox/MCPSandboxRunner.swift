@@ -1,6 +1,6 @@
 // MCPSandboxRunner.swift
-// $TMPDIR/swiftmcp-test-{uuid}/ 임시 디렉토리에서 격리된 MCP 서버 테스트 실행
-// CacheManager(sandboxRoot:) 주입으로 기존 ~/.swiftmcp/ 캐시 미오염
+// $TMPDIR/mcpswx-test-{uuid}/ 임시 디렉토리에서 격리된 MCP 서버 테스트 실행
+// CacheManager(sandboxRoot:) 주입으로 기존 ~/.mcpswx/ 캐시 미오염
 // defer로 임시 디렉토리 반드시 정리
 
 import Foundation
@@ -41,7 +41,7 @@ nonisolated struct MCPSandboxRunner: Sendable {
 
         guard let serverEntry = registry.servers[packageName] else {
             printStepFail("'\(packageName)'을 레지스트리에서 찾을 수 없습니다.")
-            throw SwiftMCPError.packageNotFound("'\(packageName)'은 레지스트리에 등록되지 않았습니다.")
+            throw MCPSWXError.packageNotFound("'\(packageName)'은 레지스트리에 등록되지 않았습니다.")
         }
 
         let binaryResolver = BinaryResolver()
@@ -69,10 +69,10 @@ nonisolated struct MCPSandboxRunner: Sendable {
         let sandboxPath: String
 
         if useSandbox {
-            // $TMPDIR/swiftmcp-test-{uuid}/ 임시 디렉토리 생성
+            // $TMPDIR/mcpswx-test-{uuid}/ 임시 디렉토리 생성
             let tmpDir = NSTemporaryDirectory()
             let uuid = UUID().uuidString
-            sandboxPath = "\(tmpDir)swiftmcp-test-\(uuid)"
+            sandboxPath = "\(tmpDir)mcpswx-test-\(uuid)"
             sandboxRoot = sandboxPath
 
             do {

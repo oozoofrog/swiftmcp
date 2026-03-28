@@ -1,5 +1,5 @@
 // InstallCommand.swift
-// `swiftmcp install <name>` 구현
+// `mcpswx install <name>` 구현
 // 실행 없이 다운로드·캐싱만 수행
 
 import ArgumentParser
@@ -10,7 +10,7 @@ struct InstallCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "install",
         abstract: "MCP 서버를 다운로드하여 캐시에 설치합니다 (실행하지 않음).",
-        usage: "swiftmcp install <name>"
+        usage: "mcpswx install <name>"
     )
 
     @Argument(help: "설치할 MCP 서버 이름 (레지스트리에 등록된 이름)")
@@ -32,7 +32,7 @@ struct InstallCommand: AsyncParsableCommand {
 
         guard let serverEntry = registry.servers[name] else {
             stderr.writeError("Package not found in registry: '\(name)'")
-            stderr.write("Try: swiftmcp search <query>")
+            stderr.write("Try: mcpswx search <query>")
             throw ExitCode.failure
         }
 

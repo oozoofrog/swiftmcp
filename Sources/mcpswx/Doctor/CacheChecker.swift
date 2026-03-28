@@ -1,5 +1,5 @@
 // CacheChecker.swift
-// ~/.swiftmcp/ 디렉토리 존재 여부, 캐시 패키지 수, 총 디스크 사용량(MB) 확인
+// ~/.mcpswx/ 디렉토리 존재 여부, 캐시 패키지 수, 총 디스크 사용량(MB) 확인
 // FileManager 기반 디렉토리 순회
 
 import Foundation

@@ -1,5 +1,5 @@
 // TestCommand.swift
-// `swiftmcp test <name>` — MCP 서버 샌드박스 테스트 커맨드
+// `mcpswx test <name>` — MCP 서버 샌드박스 테스트 커맨드
 // 임시 디렉토리에서 격리된 전체 라이프사이클 검증
 
 import ArgumentParser
@@ -38,7 +38,7 @@ struct TestCommand: AsyncParsableCommand {
     func run() async throws {
         // --no-sandbox 경고
         if !sandbox {
-            fputs("경고: --no-sandbox 모드입니다. 기존 ~/.swiftmcp/ 캐시가 오염될 수 있습니다.\n", stderr)
+            fputs("경고: --no-sandbox 모드입니다. 기존 ~/.mcpswx/ 캐시가 오염될 수 있습니다.\n", stderr)
         }
 
         let startTime = Date()

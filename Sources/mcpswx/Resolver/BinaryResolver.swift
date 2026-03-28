@@ -76,12 +76,12 @@ nonisolated struct BinaryResolver: Sendable {
     func resolve(entry: ServerEntry) async throws -> (url: URL, version: String) {
         // 플랫폼 감지
         guard let platform = Self.detectPlatform() else {
-            throw SwiftMCPError.unsupportedPlatform("현재 플랫폼을 감지할 수 없습니다.")
+            throw MCPSWXError.unsupportedPlatform("현재 플랫폼을 감지할 수 없습니다.")
         }
 
         // 플랫폼 artifact 확인
         guard let platformEntry = entry.platforms[platform] else {
-            throw SwiftMCPError.unsupportedPlatform("플랫폼 '\(platform)'은 지원되지 않습니다.")
+            throw MCPSWXError.unsupportedPlatform("플랫폼 '\(platform)'은 지원되지 않습니다.")
         }
 
         // GitHub Releases API 호출
@@ -90,13 +90,13 @@ nonisolated struct BinaryResolver: Sendable {
 
         // artifact 이름으로 asset URL 찾기
         guard let asset = release.assets.first(where: { $0.name == platformEntry.artifact }) else {
-            throw SwiftMCPError.artifactNotFound(
+            throw MCPSWXError.artifactNotFound(
                 "릴리스 \(version)에서 artifact '\(platformEntry.artifact)'를 찾을 수 없습니다."
             )
         }
 
         guard let downloadURL = URL(string: asset.browserDownloadURL) else {
-            throw SwiftMCPError.networkError("잘못된 다운로드 URL: \(asset.browserDownloadURL)")
+            throw MCPSWXError.networkError("잘못된 다운로드 URL: \(asset.browserDownloadURL)")
         }
 
         return (downloadURL, version)
@@ -108,7 +108,7 @@ nonisolated struct BinaryResolver: Sendable {
     private func fetchLatestRelease(repo: String) async throws -> GitHubRelease {
         let apiURL = "https://api.github.com/repos/\(repo)/releases/latest"
         guard let url = URL(string: apiURL) else {
-            throw SwiftMCPError.networkError("잘못된 API URL: \(apiURL)")
+            throw MCPSWXError.networkError("잘못된 API URL: \(apiURL)")
         }
 
         var request = URLRequest(url: url)
@@ -118,14 +118,14 @@ nonisolated struct BinaryResolver: Sendable {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw SwiftMCPError.networkError("잘못된 HTTP 응답")
+            throw MCPSWXError.networkError("잘못된 HTTP 응답")
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             if httpResponse.statusCode == 404 {
-                throw SwiftMCPError.artifactNotFound("저장소 '\(repo)'에 릴리스가 없습니다.")
+                throw MCPSWXError.artifactNotFound("저장소 '\(repo)'에 릴리스가 없습니다.")
             }
-            throw SwiftMCPError.networkError("GitHub API 응답 오류: \(httpResponse.statusCode)")
+            throw MCPSWXError.networkError("GitHub API 응답 오류: \(httpResponse.statusCode)")
         }
 
         let decoder = JSONDecoder()

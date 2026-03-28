@@ -1,5 +1,5 @@
 // DoctorCommand.swift
-// `swiftmcp doctor` — 환경 진단 커맨드
+// `mcpswx doctor` — 환경 진단 커맨드
 // ANSI 컬러 기호 출력, TTY 비연결 시 plain text, --json 지원
 // 실패 항목 존재 시 exit(1) 반환
 
@@ -31,7 +31,7 @@ struct DoctorCommand: AsyncParsableCommand {
         var allResults: [DoctorResult] = []
 
         if !json {
-            fputs("swiftmcp doctor\n\n환경 진단 결과:\n", stderr)
+            fputs("mcpswx doctor\n\n환경 진단 결과:\n", stderr)
         }
 
         for checker in checkers {

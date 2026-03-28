@@ -1,5 +1,5 @@
 // SearchCommand.swift
-// `swiftmcp search <query>` 구현
+// `mcpswx search <query>` 구현
 // 레지스트리에서 name/description 필드 대소문자 무관 검색
 
 import ArgumentParser
@@ -18,7 +18,7 @@ struct SearchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "search",
         abstract: "레지스트리에서 MCP 서버를 검색합니다.",
-        usage: "swiftmcp search <query> [--json]"
+        usage: "mcpswx search <query> [--json]"
     )
 
     @Argument(help: "검색어 (이름 또는 설명에서 대소문자 무관 검색)")
@@ -91,13 +91,13 @@ struct SearchCommand: AsyncParsableCommand {
                 print("  " + ANSIStyle.green + ANSIStyle.bold + name + ANSIStyle.reset)
                 print("  설명: " + entry.description)
                 print("  저장소: " + ANSIStyle.blue + entry.repo + ANSIStyle.reset)
-                print("  실행: " + ANSIStyle.dim + "swiftmcp run \(name)" + ANSIStyle.reset)
+                print("  실행: " + ANSIStyle.dim + "mcpswx run \(name)" + ANSIStyle.reset)
             } else {
                 print("")
                 print("  \(name)")
                 print("  설명: \(entry.description)")
                 print("  저장소: \(entry.repo)")
-                print("  실행: swiftmcp run \(name)")
+                print("  실행: mcpswx run \(name)")
             }
         }
     }

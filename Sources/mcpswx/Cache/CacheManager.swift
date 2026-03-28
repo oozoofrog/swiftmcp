@@ -1,18 +1,18 @@
 // CacheManager.swift
-// ~/.swiftmcp/cache/{name}/{version}/ 경로 관리
+// ~/.mcpswx/cache/{name}/{version}/ 경로 관리
 // tar.gz 다운로드 후 압축 해제, binary 실행 권한 설정
-// sandboxRoot 주입 지원: nil이면 기본 ~/.swiftmcp/ 사용, 설정 시 샌드박스 격리 경로 사용
+// sandboxRoot 주입 지원: nil이면 기본 ~/.mcpswx/ 사용, 설정 시 샌드박스 격리 경로 사용
 
 import Foundation
 
-/// 캐시 관리자 — ~/.swiftmcp/cache/ 디렉토리 관리
+/// 캐시 관리자 — ~/.mcpswx/cache/ 디렉토리 관리
 /// sandboxRoot를 주입하면 해당 경로를 루트로 사용 (샌드박스 테스트 전용)
 nonisolated struct CacheManager: Sendable {
 
-    /// 샌드박스 루트 디렉토리 (nil이면 기본 ~/.swiftmcp/ 사용)
+    /// 샌드박스 루트 디렉토리 (nil이면 기본 ~/.mcpswx/ 사용)
     let sandboxRoot: String?
 
-    /// 기본 초기화 — ~/.swiftmcp/ 사용
+    /// 기본 초기화 — ~/.mcpswx/ 사용
     init(sandboxRoot: String? = nil) {
         self.sandboxRoot = sandboxRoot
     }
@@ -23,16 +23,16 @@ nonisolated struct CacheManager: Sendable {
             return "\(root)/cache"
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.swiftmcp/cache"
+        return "\(home)/.mcpswx/cache"
     }
 
-    /// swiftmcp 루트 디렉토리 (sandboxRoot 주입 시 해당 경로 사용)
-    var swiftmcpRoot: String {
+    /// mcpswx 루트 디렉토리 (sandboxRoot 주입 시 해당 경로 사용)
+    var mcpswxRoot: String {
         if let root = sandboxRoot {
             return root
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.swiftmcp"
+        return "\(home)/.mcpswx"
     }
 
     /// 특정 패키지·버전의 캐시 디렉토리 경로
@@ -71,13 +71,13 @@ nonisolated struct CacheManager: Sendable {
         try fm.createDirectory(atPath: cacheDirectory, withIntermediateDirectories: true)
 
         // 임시 파일에 다운로드
-        let tmpFile = "\(NSTemporaryDirectory())/swiftmcp-\(name)-\(version).tar.gz"
+        let tmpFile = "\(NSTemporaryDirectory())/mcpswx-\(name)-\(version).tar.gz"
 
         let (tmpURL, response) = try await URLSession.shared.download(from: url)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<300).contains(httpResponse.statusCode) else {
-            throw SwiftMCPError.downloadFailed("다운로드 실패: HTTP 오류")
+            throw MCPSWXError.downloadFailed("다운로드 실패: HTTP 오류")
         }
 
         // 임시 파일로 이동
@@ -108,7 +108,7 @@ nonisolated struct CacheManager: Sendable {
             return foundPath
         }
 
-        throw SwiftMCPError.extractionFailed("압축 해제 후 실행 파일을 찾을 수 없습니다.")
+        throw MCPSWXError.extractionFailed("압축 해제 후 실행 파일을 찾을 수 없습니다.")
     }
 
     /// 설치된 패키지 목록 반환
@@ -151,7 +151,7 @@ nonisolated struct CacheManager: Sendable {
         let fm = FileManager.default
 
         guard fm.fileExists(atPath: packageDir) else {
-            throw SwiftMCPError.packageNotFound("'\(name)' 캐시를 찾을 수 없습니다.")
+            throw MCPSWXError.packageNotFound("'\(name)' 캐시를 찾을 수 없습니다.")
         }
 
         try fm.removeItem(atPath: packageDir)
@@ -184,7 +184,7 @@ nonisolated struct CacheManager: Sendable {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw SwiftMCPError.extractionFailed("tar 압축 해제 실패 (exit code: \(process.terminationStatus))")
+            throw MCPSWXError.extractionFailed("tar 압축 해제 실패 (exit code: \(process.terminationStatus))")
         }
     }
 

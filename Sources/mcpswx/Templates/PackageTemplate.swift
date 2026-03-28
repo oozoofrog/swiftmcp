@@ -309,19 +309,19 @@ nonisolated struct ProjectTemplates: Sendable {
         ## 설치
 
         ```bash
-        swiftmcp install \(projectName)
+        mcpswx install \(projectName)
         ```
 
         ## 실행
 
         ```bash
-        swiftmcp run \(projectName)
+        mcpswx run \(projectName)
         ```
 
         ## Claude Code MCP 등록
 
         ```bash
-        claude mcp add \(projectName) -- swiftmcp run \(projectName)
+        claude mcp add \(projectName) -- mcpswx run \(projectName)
         ```
 
         ## 개발
