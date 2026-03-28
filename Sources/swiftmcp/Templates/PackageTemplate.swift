@@ -11,7 +11,7 @@ nonisolated struct ProjectTemplates: Sendable {
     /// Package.swift 템플릿
     func packageSwift() -> String {
         return """
-        // swift-tools-version: 6.0
+        // swift-tools-version: 6.2
         // \(projectName) — MCP 서버
 
         import PackageDescription
@@ -45,7 +45,8 @@ nonisolated struct ProjectTemplates: Sendable {
 
         import Foundation
 
-        // MCP 서버 초기화
+        // MCP 서버 초기화 및 실행
+        // MCPServer는 actor이지만 run()은 nonisolated — 블로킹 stdin 루프 직접 호출 가능
         let server = MCPServer()
         server.run()
         """
@@ -60,9 +61,19 @@ nonisolated struct ProjectTemplates: Sendable {
 
         import Foundation
 
+        /// MCP tool 프로토콜 — 순수 기능이므로 nonisolated struct로 구현 권장
+        protocol MCPTool: Sendable {
+            var name: String { get }
+            var description: String { get }
+            var inputSchema: [String: Any] { get }
+            func call(arguments: [String: Any]) -> String
+        }
+
         /// MCP 서버 핵심 구현
-        final class MCPServer: @unchecked Sendable {
+        /// actor 사용: initialized 상태를 안전하게 관리하는 유일한 mutable 지점
+        actor MCPServer {
             private let tools: [String: any MCPTool]
+            private var initialized = false
 
             init() {
                 // 여기에 tool 등록
@@ -70,10 +81,8 @@ nonisolated struct ProjectTemplates: Sendable {
                 self.tools = [sampleTool.name: sampleTool]
             }
 
-            /// 서버 메인 루프 — stdin에서 JSON 요청 읽기
-            func run() {
-                var initialized = false
-
+            /// 서버 메인 루프 — stdin에서 JSON 요청 읽기 (nonisolated: stdin 블로킹 루프)
+            nonisolated func run() {
                 while let line = readLine(strippingNewline: true) {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
                     guard !trimmed.isEmpty else { continue }
@@ -89,32 +98,41 @@ nonisolated struct ProjectTemplates: Sendable {
                     let method = json["method"] as? String ?? ""
                     let params = json["params"] as? [String: Any]
 
-                    switch method {
-                    case "initialize":
-                        sendResult(id: id, result: handleInitialize())
-                        initialized = true
-
-                    case "initialized":
-                        break // notification
-
-                    case "tools/list":
-                        guard initialized else {
-                            sendError(id: id, code: -32002, message: "Not initialized")
-                            continue
-                        }
-                        sendResult(id: id, result: handleToolsList())
-
-                    case "tools/call":
-                        guard initialized else {
-                            sendError(id: id, code: -32002, message: "Not initialized")
-                            continue
-                        }
-                        let callResult = handleToolsCall(params: params)
-                        sendResult(id: id, result: callResult)
-
-                    default:
-                        sendError(id: id, code: -32601, message: "Method not found: \\(method)")
+                    // actor 메서드를 동기적으로 호출 (메인 스레드 없는 CLI 환경)
+                    let semaphore = DispatchSemaphore(value: 0)
+                    Task {
+                        await handleRequest(id: id, method: method, params: params)
+                        semaphore.signal()
                     }
+                    semaphore.wait()
+                }
+            }
+
+            private func handleRequest(id: Any?, method: String, params: [String: Any]?) {
+                switch method {
+                case "initialize":
+                    sendResult(id: id, result: handleInitialize())
+                    initialized = true
+
+                case "initialized":
+                    break // notification — 응답 없음
+
+                case "tools/list":
+                    guard initialized else {
+                        sendError(id: id, code: -32002, message: "Not initialized")
+                        return
+                    }
+                    sendResult(id: id, result: handleToolsList())
+
+                case "tools/call":
+                    guard initialized else {
+                        sendError(id: id, code: -32002, message: "Not initialized")
+                        return
+                    }
+                    sendResult(id: id, result: handleToolsCall(params: params))
+
+                default:
+                    sendError(id: id, code: -32601, message: "Method not found: \\(method)")
                 }
             }
 
@@ -148,22 +166,22 @@ nonisolated struct ProjectTemplates: Sendable {
                 return ["content": [["type": "text", "text": result]]]
             }
 
-            private func sendResult(id: Any?, result: [String: Any]) {
+            nonisolated private func sendResult(id: Any?, result: [String: Any]) {
                 var response: [String: Any] = ["jsonrpc": "2.0", "result": result]
                 response["id"] = id
-                output(response)
+                outputJSON(response)
             }
 
-            private func sendError(id: Any?, code: Int, message: String) {
+            nonisolated private func sendError(id: Any?, code: Int, message: String) {
                 var response: [String: Any] = [
                     "jsonrpc": "2.0",
                     "error": ["code": code, "message": message]
                 ]
                 response["id"] = id
-                output(response)
+                outputJSON(response)
             }
 
-            private func output(_ dict: [String: Any]) {
+            nonisolated private func outputJSON(_ dict: [String: Any]) {
                 if let data = try? JSONSerialization.data(withJSONObject: dict),
                    let str = String(data: data, encoding: .utf8) {
                     print(str)
@@ -174,14 +192,6 @@ nonisolated struct ProjectTemplates: Sendable {
             private func makeError(_ message: String) -> [String: Any] {
                 return ["content": [["type": "text", "text": "오류: \\(message)"]], "isError": true]
             }
-        }
-
-        /// MCP tool 프로토콜
-        protocol MCPTool: Sendable {
-            var name: String { get }
-            var description: String { get }
-            var inputSchema: [String: Any] { get }
-            func call(arguments: [String: Any]) -> String
         }
         """
     }
