@@ -5,20 +5,32 @@
 import ArgumentParser
 import Foundation
 
+/// 검색 결과 JSON 출력용 Codable 모델
+struct SearchResult: Codable, Sendable {
+    let name: String
+    let description: String
+    let repo: String
+    let executable: String
+}
+
 /// 레지스트리에서 MCP 서버를 검색하는 커맨드
 struct SearchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "search",
         abstract: "레지스트리에서 MCP 서버를 검색합니다.",
-        usage: "swiftmcp search <query>"
+        usage: "swiftmcp search <query> [--json]"
     )
 
     @Argument(help: "검색어 (이름 또는 설명에서 대소문자 무관 검색)")
     var query: String
 
+    @Flag(name: .long, help: "JSON 형식으로 출력 (기계 판독 가능)")
+    var json: Bool = false
+
     mutating func run() async throws {
         let stderr = StderrWriter()
-        let isTTY = isatty(STDOUT_FILENO) != 0
+        // stdout 기준 tty 감지 (결과를 stdout으로 출력하므로)
+        let isTTY = ANSIStyle.isStdoutTTY
 
         // 레지스트리 로드
         let registryClient = RegistryClient()
@@ -35,6 +47,25 @@ struct SearchCommand: AsyncParsableCommand {
         let results = registry.servers.filter { name, entry in
             name.lowercased().contains(lowercasedQuery) ||
             entry.description.lowercased().contains(lowercasedQuery)
+        }
+
+        // JSON 출력 모드
+        if json {
+            let searchResults = results.sorted(by: { $0.key < $1.key }).map { name, entry in
+                SearchResult(
+                    name: name,
+                    description: entry.description,
+                    repo: entry.repo,
+                    executable: entry.executable
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let jsonData = try encoder.encode(searchResults)
+            if let jsonString = String(data: jsonData, encoding: .utf8) {
+                print(jsonString)
+            }
+            return
         }
 
         if results.isEmpty {

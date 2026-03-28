@@ -6,6 +6,22 @@
 import ArgumentParser
 import Foundation
 
+/// registry show --json 출력용 Codable 모델
+struct RegistryInfo: Codable, Sendable {
+    let url: String
+    let cacheDirectory: String
+    let serverCount: Int
+    let servers: [RegistryServerInfo]
+}
+
+/// registry show --json 서버 항목
+struct RegistryServerInfo: Codable, Sendable {
+    let name: String
+    let description: String
+    let repo: String
+    let executable: String
+}
+
 /// 레지스트리 관리 커맨드 그룹
 struct RegistryCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -22,10 +38,45 @@ struct RegistryCommand: AsyncParsableCommand {
             abstract: "현재 레지스트리 정보를 표시합니다."
         )
 
+        @Flag(name: .long, help: "JSON 형식으로 출력 (기계 판독 가능)")
+        var json: Bool = false
+
         mutating func run() async throws {
-            let isTTY = isatty(STDOUT_FILENO) != 0
+            // stdout 기준 tty 감지 (결과를 stdout으로 출력하므로)
+            let isTTY = ANSIStyle.isStdoutTTY
             let registryURL = RegistryClient.registryURL
             let cacheDir = RegistryClient.cacheDirectory
+
+            // 레지스트리 로드 시도
+            let registryClient = RegistryClient()
+            let registry = try? await registryClient.fetch()
+
+            // JSON 출력 모드
+            if json {
+                let serverList: [RegistryServerInfo] = (registry?.servers ?? [:])
+                    .sorted(by: { $0.key < $1.key })
+                    .map { name, entry in
+                        RegistryServerInfo(
+                            name: name,
+                            description: entry.description,
+                            repo: entry.repo,
+                            executable: entry.executable
+                        )
+                    }
+                let info = RegistryInfo(
+                    url: registryURL,
+                    cacheDirectory: cacheDir,
+                    serverCount: registry?.servers.count ?? 0,
+                    servers: serverList
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let jsonData = try encoder.encode(info)
+                if let jsonString = String(data: jsonData, encoding: .utf8) {
+                    print(jsonString)
+                }
+                return
+            }
 
             if isTTY {
                 print(ANSIStyle.bold + "레지스트리 정보:" + ANSIStyle.reset)
@@ -37,10 +88,7 @@ struct RegistryCommand: AsyncParsableCommand {
                 print("  캐시 경로: \(cacheDir)")
             }
 
-            // 캐시된 레지스트리 로드 시도
-            let registryClient = RegistryClient()
-            do {
-                let registry = try await registryClient.fetch()
+            if let registry {
                 let serverCount = registry.servers.count
                 if isTTY {
                     print("  서버 수:   " + ANSIStyle.green + "\(serverCount)개" + ANSIStyle.reset)
@@ -58,8 +106,8 @@ struct RegistryCommand: AsyncParsableCommand {
                         print("  \(name) — \(entry.description)")
                     }
                 }
-            } catch {
-                print("  (레지스트리를 로드할 수 없습니다: \(error))")
+            } else {
+                print("  (레지스트리를 로드할 수 없습니다)")
             }
         }
     }

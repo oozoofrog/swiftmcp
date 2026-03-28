@@ -31,8 +31,8 @@ struct ListCommand: AsyncParsableCommand {
             return
         }
 
-        // 텍스트 출력 모드
-        let isTTY = isatty(STDOUT_FILENO) != 0
+        // 텍스트 출력 모드 (stdout 기준 tty 감지)
+        let isTTY = ANSIStyle.isStdoutTTY
 
         if installedPackages.isEmpty {
             let message = "No packages installed."

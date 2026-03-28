@@ -1,6 +1,6 @@
 // ANSIStyle.swift
 // ANSI escape 코드, 컬러, 박스 드로잉
-// tty 감지: isatty(STDOUT_FILENO)로 비터미널 환경에서 자동 비활성화
+// tty 감지: isatty(STDERR_FILENO)로 비터미널 환경에서 자동 비활성화
 
 import Foundation
 
@@ -8,9 +8,14 @@ import Foundation
 /// 비TTY 환경에서는 빈 문자열 반환하여 컬러/스타일 자동 비활성화
 nonisolated enum ANSIStyle {
 
-    /// tty 여부 — isatty(STDERR_FILENO) 기준, 매 호출 시 확인
+    /// stderr tty 여부 — isatty(STDERR_FILENO) 기준 (진행 상황 출력용)
     static var isTTY: Bool {
         return isatty(STDERR_FILENO) != 0
+    }
+
+    /// stdout tty 여부 — isatty(STDOUT_FILENO) 기준 (결과 출력 컬러 적용용)
+    static var isStdoutTTY: Bool {
+        return isatty(STDOUT_FILENO) != 0
     }
 
     // MARK: - 색상
