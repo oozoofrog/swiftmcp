@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "filepath=\"$CLAUDE_TOOL_ARG_FILE_PATH\"; if [[ \"$filepath\" == *.swift ]]; then cd /Volumes/eyedisk/develop/oozoofrog/swiftmcp && swift build 2>&1 | tail -5; fi"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "content=\"$CLAUDE_TOOL_ARG_NEW_STRING$CLAUDE_TOOL_ARG_CONTENT\"; if echo \"$content\" | grep -qE '\\bprint\\(' && ! echo \"$content\" | grep -q 'stderr'; then echo 'BLOCK: stdout 오염 주의 — print() 대신 StderrWriter 또는 FileHandle.standardError 사용 필요'; exit 1; fi"
+      }
+    ]
+  }
+}
