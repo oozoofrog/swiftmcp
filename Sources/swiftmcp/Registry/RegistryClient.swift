@@ -61,9 +61,11 @@ nonisolated struct RegistryClient: Sendable {
 
         let (data, response) = try await URLSession.shared.data(from: url)
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
-            throw SwiftMCPError.networkError("레지스트리 서버 응답 오류")
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SwiftMCPError.networkError("레지스트리 서버 응답 오류 (HTTP 응답 없음)")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw SwiftMCPError.networkError("레지스트리 서버 응답 오류 (HTTP \(httpResponse.statusCode))")
         }
 
         let decoder = JSONDecoder()
