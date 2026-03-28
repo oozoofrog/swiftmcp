@@ -1,21 +1,43 @@
 // CacheManager.swift
 // ~/.swiftmcp/cache/{name}/{version}/ 경로 관리
 // tar.gz 다운로드 후 압축 해제, binary 실행 권한 설정
+// sandboxRoot 주입 지원: nil이면 기본 ~/.swiftmcp/ 사용, 설정 시 샌드박스 격리 경로 사용
 
 import Foundation
 
 /// 캐시 관리자 — ~/.swiftmcp/cache/ 디렉토리 관리
+/// sandboxRoot를 주입하면 해당 경로를 루트로 사용 (샌드박스 테스트 전용)
 nonisolated struct CacheManager: Sendable {
 
-    /// 캐시 루트 디렉토리
-    static var cacheRoot: String {
+    /// 샌드박스 루트 디렉토리 (nil이면 기본 ~/.swiftmcp/ 사용)
+    let sandboxRoot: String?
+
+    /// 기본 초기화 — ~/.swiftmcp/ 사용
+    init(sandboxRoot: String? = nil) {
+        self.sandboxRoot = sandboxRoot
+    }
+
+    /// 캐시 루트 디렉토리 (sandboxRoot 주입 시 해당 경로/cache/ 사용)
+    var cacheRoot: String {
+        if let root = sandboxRoot {
+            return "\(root)/cache"
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/.swiftmcp/cache"
     }
 
+    /// swiftmcp 루트 디렉토리 (sandboxRoot 주입 시 해당 경로 사용)
+    var swiftmcpRoot: String {
+        if let root = sandboxRoot {
+            return root
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/.swiftmcp"
+    }
+
     /// 특정 패키지·버전의 캐시 디렉토리 경로
     func cacheDir(name: String, version: String) -> String {
-        "\(Self.cacheRoot)/\(name)/\(version)"
+        "\(cacheRoot)/\(name)/\(version)"
     }
 
     /// 캐시에 설치된 바이너리 경로 반환 (없으면 nil)
@@ -92,7 +114,7 @@ nonisolated struct CacheManager: Sendable {
     /// 설치된 패키지 목록 반환
     func listInstalledPackages() -> [InstalledPackage] {
         let fm = FileManager.default
-        let root = Self.cacheRoot
+        let root = cacheRoot
 
         guard let packageNames = try? fm.contentsOfDirectory(atPath: root) else {
             return []
@@ -125,7 +147,7 @@ nonisolated struct CacheManager: Sendable {
 
     /// 특정 패키지 캐시 삭제
     func clean(name: String) throws {
-        let packageDir = "\(Self.cacheRoot)/\(name)"
+        let packageDir = "\(cacheRoot)/\(name)"
         let fm = FileManager.default
 
         guard fm.fileExists(atPath: packageDir) else {
@@ -138,7 +160,7 @@ nonisolated struct CacheManager: Sendable {
     /// 전체 캐시 삭제
     func cleanAll() throws {
         let fm = FileManager.default
-        let root = Self.cacheRoot
+        let root = cacheRoot
 
         guard fm.fileExists(atPath: root) else { return }
 

@@ -33,6 +33,8 @@ struct SwiftMCP: AsyncParsableCommand {
             RegistryCommand.self,
             InitCommand.self,
             MCPCommand.self,
+            DoctorCommand.self,
+            TestCommand.self,
         ],
         defaultSubcommand: nil
     )
