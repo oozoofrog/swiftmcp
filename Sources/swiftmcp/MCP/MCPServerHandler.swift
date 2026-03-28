@@ -212,6 +212,12 @@ nonisolated struct MCPServerHandler: Sendable {
            let str = String(data: data, encoding: .utf8) {
             print(str)
             fflush(stdout)
+        } else {
+            // 인코딩 실패 시 fallback 에러 응답으로 클라이언트 hang 방지
+            // JSON-RPC 2.0: 응답 직렬화 실패는 Internal error (-32603)
+            let fallback = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error: response serialization failed\"}}\n"
+            fputs(fallback, stdout)
+            fflush(stdout)
         }
     }
 }

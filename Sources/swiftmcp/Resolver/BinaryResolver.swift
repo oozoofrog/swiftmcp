@@ -38,7 +38,16 @@ nonisolated struct BinaryResolver: Sendable {
         process.standardOutput = pipe
         process.standardError = Pipe()
 
-        try? process.run()
+        // arch 명령 실행 실패 시 컴파일 타임 감지로 즉시 폴백
+        guard (try? process.run()) != nil else {
+            #if arch(arm64)
+            return "macos-arm64"
+            #elseif arch(x86_64)
+            return "macos-x86_64"
+            #else
+            return nil
+            #endif
+        }
         process.waitUntilExit()
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
