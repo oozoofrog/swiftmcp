@@ -17,18 +17,22 @@ public actor StdioLoop {
         self.stdout = stdout
     }
 
-    /// Run until stdin reaches EOF.
+    /// Run until stdin reaches EOF. All in-flight handlers are awaited before returning,
+    /// so the process does not exit while a response is still being formed.
     public func run() async {
-        for await line in linesFromStdin() {
-            guard !line.isEmpty else { continue }
-            let data = Data(line.utf8)
-            // Fire-and-forget so a slow handler does not block the read loop.
-            // Response order may differ from request order; clients match by id.
-            Task { [server] in
-                if let response = await server.handleInbound(data) {
-                    self.write(response)
+        await withTaskGroup(of: Void.self) { group in
+            for await line in linesFromStdin() {
+                guard !line.isEmpty else { continue }
+                let data = Data(line.utf8)
+                // Each message gets its own child task so a slow handler does not block reads.
+                // Response order may differ from request order; clients match by id.
+                group.addTask { [server, self] in
+                    if let response = await server.handleInbound(data) {
+                        await self.write(response)
+                    }
                 }
             }
+            await group.waitForAll()
         }
     }
 
