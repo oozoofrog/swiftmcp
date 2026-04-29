@@ -16,8 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 진입점: **`mcpswx`** (Swift Package Manager executable). 이름은 사전 합의(`.claude/settings.local.json`).
 - 코어 로직은 **`SwiftcMCPCore` 라이브러리 타깃**에 둔다. 진입점은 라이브러리의 얇은 어댑터.
-- MCP 라이브러리: [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk) product `MCP` (`up-to-next-minor: 0.11.0`).
-- 사양: MCP **2025-11-25**. 통신은 stdio 위 JSON-RPC.
+- MCP 사양 **2025-11-25**의 stdio JSON-RPC 서버를 **Foundation만으로 직접 구현**한다. 외부 MCP 라이브러리에 의존하지 않는다 — 사양 문서가 1차 출처.
 - 호스트 환경: Swift 6.0+ / macOS 13+. 현재 toolchain은 Swift 6.3.1 / Xcode 26 / arm64-apple-macosx26.
 
 ## 통신 규약

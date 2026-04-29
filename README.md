@@ -15,7 +15,7 @@ Early development. See [`.claude/PLAN.md`](./.claude/PLAN.md) for the staged imp
 ## Architecture
 
 - Externally invokes the locally installed Swift toolchain (`swiftc`, `swift-frontend`); not a compiler re-implementation, and not bound to any specific Swift source tree.
-- Built on the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk).
+- Implements the [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) stdio JSON-RPC server directly on Foundation. No external runtime dependencies.
 - Layered: `SwiftcMCPCore` library + `mcpswx` executable (MCP server entry point).
 
 ## Requirements
