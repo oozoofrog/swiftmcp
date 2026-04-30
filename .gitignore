@@ -3,6 +3,13 @@
 .swiftpm/
 DerivedData/
 
+# Swift compiler artifacts (when running swiftc directly during probes)
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+*.abi.json
+*.symbols.json
+
 # Xcode
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
