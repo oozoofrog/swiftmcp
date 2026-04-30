@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift build:*)",
+      "Bash(swift test:*)",
+      "Bash(swift package:*)",
+      "Bash(swift run:*)",
+      "Bash(.build/debug/mcpswx:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-swift-build.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
