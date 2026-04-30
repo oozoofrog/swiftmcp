@@ -209,7 +209,9 @@ Stage 1을 끝낸 시점에 두 갈래 중 하나를 선택한다. 지금 시점
 
 - **Toolchain 해석 우선순위**: `TOOLCHAINS` env → `xcrun -f swiftc` → `PATH`. 결과 toolchain 경로와 버전을 모든 도구 응답의 메타에 포함.
 - **AST/SIL 포맷 비안정성**: 외부에 산출물을 노출할 때 toolchain 버전을 함께 반환. 컴파일러 버전 간 포맷 호환을 약속하지 않는다.
-- **호출별 임시 디렉토리**: `$TMPDIR/swiftmcp-<uuid>/`. 호출 종료 시 정리.
+- **호출별 임시 디렉토리**: 두 종류로 분리.
+  - `CallScratch` (`$TMPDIR/swiftmcp-<uuid>/`): 호출 처리 동안에만 사용되는 작업 디렉토리. 호출 종료 시 정리(`dispose()` 또는 deinit).
+  - `PersistentScratch` (`$TMPDIR/swiftmcp-out-<uuid>/`): 도구 응답으로 *경로*를 노출하는 산출물용. 호출 종료 후에도 보존되어 클라이언트가 파일을 열 수 있음. OS의 임시 디렉토리 정리 정책에 위임.
 - **컴파일러 호출 vs 빌드**: 분석 호출(`-typecheck` 등)은 오브젝트 산출 없이 끝나도록 한다. 빌드 캐시 오염 방지.
 - **stdio 분리**: 자식 프로세스 stdout/stderr는 부모 stdio와 절대 섞이지 않는다 (Pipe 사용).
 - **응답 직렬화**: stdout 쓰기는 actor로 직렬화 — 한 번에 한 줄(JSON + `\n`) 단위로만 atomic.

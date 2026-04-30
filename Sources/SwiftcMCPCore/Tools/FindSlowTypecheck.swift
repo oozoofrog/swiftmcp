@@ -91,14 +91,7 @@ public struct FindSlowTypecheckTool: MCPTool {
             compilerExitCode: processResult.exitCode
         )
 
-        let text = try renderResult(result)
+        let text = try renderJSON(result)
         return CallToolResult(content: [.text(text)], isError: false)
     }
-}
-
-private func renderResult(_ result: FindSlowTypecheckTool.Result) throws -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(result)
-    return String(data: data, encoding: .utf8) ?? "{}"
 }
