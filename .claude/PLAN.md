@@ -194,14 +194,30 @@ EOF
 - 빌드 결과의 sandbox(예: 자식 프로세스 환경변수 제한). Stage 1은 부모 환경 그대로 inherit.
 - 산출물의 `resource_link` content type 노출. Stage 1은 `text`에 경로 문자열만.
 
-## 4. Stage 1 종료 후 분기점
+## 4. Stage 1 종료 후 분기점 (결정: 갈래 A)
 
-Stage 1을 끝낸 시점에 두 갈래 중 하나를 선택한다. 지금 시점에 결정하지 않는다.
+Stage 1 종료 시점에 갈래 A(도구 폭 확장, 단일 파일 입력 유지)를 선택. 갈래 B(입력 폭 확장)는 Stage 2 종료 후 진행.
 
-- **갈래 A — 도구 폭 확장 (같은 단일 파일 입력 유지)**: `compile_stats`, `call_graph`, `concurrency_audit`, `api_surface`. 인프라 변경 거의 없음.
-- **갈래 B — 입력 폭 확장 (도구는 Stage 1의 4개 유지)**: 소스 디렉토리 → Swift 모듈 → SwiftPM 패키지 입력 단계 추가. 각 단계마다 컴파일러 인자 추출 경로 1개씩 추가.
+## 5. Stage 2 — 도구 폭 확장 (단일 파일 입력 유지)
 
-선택 기준은 Stage 1 종료 시점에 어느 도구가 사용자 시나리오에서 더 자주 호출되는지가 보일 때 그 갈래 우선. 두 갈래는 직교라 두 번째 갈래는 첫 번째 후 그대로 진행 가능.
+Stage 1의 4개 도구에 4개를 추가한다. 인프라 변경은 거의 없고, `SwiftcInvocation` + `CallScratch`/`PersistentScratch` + `WarningParser` 같은 Stage 1 컴포넌트를 재사용한다.
+
+### 5.1 Sub-stages
+
+- **2.A — `compile_stats`**: `swiftc -typecheck -stats-output-dir <dir>`로 frontend stats JSON을 떨군 뒤 카운터를 통합. top-N 카운터 + `byCategory` 합계(`AST`/`Parse`/`Sema`/`IRGen`/`LLVM`/`SIL` 등) 반환.
+- **2.B — `call_graph`**: SIL을 emit하고 `apply` / `partial_apply` / `witness_method` 등 호출 명령을 파싱하여 caller→callee 그래프 + 동적 디스패치 비율 반환.
+- **2.C — `concurrency_audit`**: `-strict-concurrency=complete -warn-concurrency` + 진단 그룹 분류로 Sendable/격리 위반을 카테고리별 카운트로 반환.
+- **2.D — `api_surface`**: `-emit-symbol-graph` + `-emit-api-descriptor`로 모듈의 공개 API 표면을 JSON으로 반환.
+
+### 5.2 종료 조건
+
+- `swift build` / `swift test` 통과.
+- 위 4개 도구 각각이 단일 파일 입력에 대해 동작하고, sub-stage별 통합 테스트 3건 이상 통과.
+- 노출 도구 수 6 → 10.
+
+## 6. Stage 2 종료 후 분기점
+
+갈래 B(입력 폭 확장)로 진입. PLAN을 그 시점에 갱신.
 
 ## 5. Stage 2+ (윤곽만)
 

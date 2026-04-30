@@ -77,6 +77,14 @@ public extension JSONValue {
         }
     }
 
+    var asInt64: Int64? {
+        switch self {
+        case .integer(let value): return value
+        case .double(let value): return Int64(value)
+        default: return nil
+        }
+    }
+
     var asBool: Bool? {
         if case .bool(let value) = self { return value }
         return nil
