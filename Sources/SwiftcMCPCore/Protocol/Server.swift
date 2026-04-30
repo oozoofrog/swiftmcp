@@ -30,6 +30,7 @@ public actor Server {
     private let info: Info
     private let registry: ToolRegistry
     private(set) var state: LifecycleState = .awaitingInitialize
+    private var inFlightTasks: [JSONRPCID: Task<Data?, Never>] = [:]
 
     public init(info: Info, registry: ToolRegistry) {
         self.info = info
@@ -37,14 +38,14 @@ public actor Server {
     }
 
     /// Process one inbound message.
-    /// Returns the encoded response data for requests, or `nil` for notifications and parse-only failures
-    /// where no response is meaningful (per spec).
+    /// Returns the encoded response data for requests, or `nil` for notifications, parse-only failures
+    /// where no response is meaningful, and **cancelled requests** (per the cancellation utility, the
+    /// server SHOULD NOT send a response for a cancelled request).
     public func handleInbound(_ data: Data) async -> Data? {
         let inbound: JSONRPCInbound
         do {
             inbound = try JSONDecoder().decode(JSONRPCInbound.self, from: data)
         } catch {
-            // Parse error — id can't be recovered, respond with id=null per JSON-RPC spec.
             return encodeResponse(.failure(id: nil, error: .parseError("\(error)")))
         }
 
@@ -62,14 +63,37 @@ public actor Server {
 
         guard let id = inbound.id else { return nil }
 
+        // Run the request inside a Task we register, so an inbound notifications/cancelled
+        // can find it by id and cancel it. The Task body inherits this actor's isolation.
+        let task = Task { [self] in
+            await self.executeRequest(id: id, method: inbound.method, params: inbound.params)
+        }
+        inFlightTasks[id] = task
+        let response = await task.value
+        inFlightTasks.removeValue(forKey: id)
+        return response
+    }
+
+    private func executeRequest(id: JSONRPCID, method: String, params: JSONValue?) async -> Data? {
         do {
-            let result = try await handleRequest(method: inbound.method, params: inbound.params)
+            let result = try await handleRequest(method: method, params: params)
+            // If cancellation arrived while the handler was running but before it threw,
+            // swallow the response to honor the spec.
+            if Task.isCancelled {
+                return nil
+            }
             return encodeResponse(.success(id: id, result: result))
+        } catch is CancellationError {
+            // Per MCP cancellation utility, do not send a response for a cancelled request.
+            return nil
         } catch let mcp as MCPError {
             return encodeResponse(.failure(id: id, error: mcp.asJSONRPCError))
         } catch let json as JSONRPCErrorObject {
             return encodeResponse(.failure(id: id, error: json))
         } catch {
+            if Task.isCancelled {
+                return nil
+            }
             return encodeResponse(.failure(id: id, error: .internalError("\(error)")))
         }
     }
@@ -91,13 +115,16 @@ public actor Server {
         }
     }
 
-    private func handleNotification(method: String, params _: JSONValue?) async {
+    private func handleNotification(method: String, params: JSONValue?) async {
         switch method {
         case "notifications/initialized":
             state = .ready
         case "notifications/cancelled":
-            // Stage 0 tools are short-lived; long-running cancellation is wired in Stage 1+.
-            break
+            // Locate the in-flight request and cancel its Task. Best-effort: if the
+            // request already completed and was unregistered, the notification is ignored.
+            if let params, let cancelled: CancelledParams = try? decodeOptionalParams(params) {
+                inFlightTasks[cancelled.requestId]?.cancel()
+            }
         default:
             // Per JSON-RPC, unknown notifications are silently ignored.
             break

@@ -93,7 +93,15 @@ Stage 0 진입 시 결정된 사항:
 - **cancellation**: `notifications/cancelled`을 Server가 받아 in-flight request id로 자식 프로세스 종료 신호로 매핑. Stage 0의 도구는 빠르게 끝나 실효 없음 — Stage 1에서 자식 프로세스 추적 인프라와 함께 도입.
 - **progress**: `_meta.progressToken`은 Stage 1에서도 미사용. Stage 2의 long-running 도구 도입 시점에 검토.
 
-## 3. Stage 1 — 단일 파일 입력 + 4개 도구
+## 3. Stage 1 — 단일 파일 입력 + 4개 도구 (완료)
+
+종료 조건 모두 충족됨. 67 tests / 15 suites 통과. 노출된 도구 6개 (Stage 0의 `print_target_info` 포함):
+`print_target_info`, `find_slow_typecheck`, `emit_ast`, `emit_sil`, `emit_ir`, `build_isolated_snippet`.
+
+Cancellation 인프라가 마지막 sub-stage(1.E)에서 자리잡음:
+- `Server`가 in-flight `Task`를 id별로 등록/해제, `notifications/cancelled` 도착 시 cancel.
+- `runProcess` / `runProcessWithTimeout`가 `withTaskCancellationHandler` + NSLock-보호 PID 사이드 채널을 통해 자식 프로세스에 SIGTERM 전달.
+- 사양 준수: cancelled 요청에는 응답을 보내지 않음 (`Task.isCancelled` 체크 + `CancellationError` 캐치 둘 다).
 
 ### 3.1 종료 조건
 

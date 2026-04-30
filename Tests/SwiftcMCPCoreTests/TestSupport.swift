@@ -39,6 +39,22 @@ struct FailingTool: MCPTool {
     }
 }
 
+/// Cancellation-aware tool: sleeps for a long time so the test can cancel mid-flight.
+struct SlowTool: MCPTool {
+    var definition: ToolDefinition {
+        ToolDefinition(
+            name: "slow",
+            description: "Sleeps for 60 seconds (cancellation-aware)",
+            inputSchema: .object(["type": .string("object")])
+        )
+    }
+
+    func call(arguments _: JSONValue?) async throws -> CallToolResult {
+        try await Task.sleep(for: .seconds(60))
+        return CallToolResult(content: [.text("done")])
+    }
+}
+
 func makeServer(registry: ToolRegistry = ToolRegistry()) -> Server {
     Server(
         info: .init(name: "test", version: "0.0.1"),
