@@ -15,6 +15,7 @@ struct Mcpswx {
         await registry.register(CompileStatsTool(toolchain: toolchain))
         await registry.register(CallGraphTool(toolchain: toolchain))
         await registry.register(ConcurrencyAuditTool(toolchain: toolchain))
+        await registry.register(ApiSurfaceTool(toolchain: toolchain))
 
         let server = Server(
             info: .init(
