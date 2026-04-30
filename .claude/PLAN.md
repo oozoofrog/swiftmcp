@@ -103,9 +103,10 @@ Stage 0 진입 시 결정된 사항:
    - 입력: `file: string` (절대 경로 또는 `working_directory` 상대), `expression_threshold_ms: int` (기본 100), `function_threshold_ms: int` (기본 100).
    - 동작: `swiftc -typecheck -Xfrontend -warn-long-expression-type-checking=<n> -Xfrontend -warn-long-function-bodies=<n> <file>` 호출.
    - 출력: `result.findings` = `[{file, line, column, ms, kind: "expression"|"function", excerpt?: string}]`. `kind`는 워닝 본문에서 추출 (`function` 케이스는 함수 이름도 포함).
-   - 워닝 정규식 (확정):
-     - 표현식: `^(.+):(\d+):(\d+): warning: expression took (\d+)ms to type-check \(limit: (\d+)ms\)$`
-     - 함수: `^(.+):(\d+):(\d+): warning: global function '(.+)' took (\d+)ms to type-check \(limit: (\d+)ms\)$` (메서드는 `instance method`/`static method`/`initializer`/`closure` 등 변형 가능 — 정규식은 키워드 화이트리스트로 일반화).
+   - 워닝 정규식 (확정): 단일 일반화 패턴
+     `^(.+?):(\d+):(\d+): warning: (.+?) took (\d+)ms to type-check \(limit: (\d+)ms\)$`
+     `subject`(예: `expression`, `global function 'compute()'`, `instance method 'foo(_:)'`)를 verbatim 보존.
+     `kind`는 `subject == "expression"`이면 `"expression"`, 그 외 모두 `"function"`으로 분류.
 
 2. **`emit_ast`** / **`emit_sil`** / **`emit_ir`** (3개 도구를 한 묶음으로 구현하되 별도 도구로 노출)
    - 입력 공통: `file: string`, `target: string?` (없으면 호스트 기본).
@@ -213,6 +214,7 @@ Stage 1을 끝낸 시점에 두 갈래 중 하나를 선택한다. 지금 시점
 - **응답 직렬화**: stdout 쓰기는 actor로 직렬화 — 한 번에 한 줄(JSON + `\n`) 단위로만 atomic.
 - **인자 검증**: `swiftc -frontend -emit-supported-arguments`로 받은 토큰 화이트리스트로 동적 검증. 사용자 입력 옵션은 화이트리스트 통과 후 호출.
 - **Hidden 옵션 노출 정책**: 본 MCP가 외부에 인자로 노출하는 화이트리스트는 `swiftc --help` 기준. `-help-hidden`/`-frontend -help-hidden`의 옵션은 도구 내부에서만 사용. 사용자가 임의 옵션을 패스하는 채널은 두지 않는다.
+- **JSON 키 명명**: 도구 결과의 JSON 키는 Swift property 이름을 그대로 사용한다(camelCase). MCP envelope(`protocolVersion` 등)과 같은 컨벤션을 도구 결과에도 유지하여 한 응답에 두 컨벤션이 섞이지 않게 한다.
 
 ## 7. Open Questions
 
