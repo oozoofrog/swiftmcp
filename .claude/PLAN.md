@@ -100,9 +100,10 @@ Stage 0 진입 시 결정된 사항:
 다음 4개 도구가 단일 `.swift` 파일 입력에 대해 동작한다.
 
 1. **`find_slow_typecheck`**
-   - 입력: `file: string` (절대 경로 또는 `working_directory` 상대), `expression_threshold_ms: int` (기본 100), `function_threshold_ms: int` (기본 100).
+   - 입력: `file: string`, `expression_threshold_ms: int` (기본 100), `function_threshold_ms: int` (기본 100).
    - 동작: `swiftc -typecheck -Xfrontend -warn-long-expression-type-checking=<n> -Xfrontend -warn-long-function-bodies=<n> <file>` 호출.
-   - 출력: `result.findings` = `[{file, line, column, ms, kind: "expression"|"function", excerpt?: string}]`. `kind`는 워닝 본문에서 추출 (`function` 케이스는 함수 이름도 포함).
+   - 출력: `findings` = `[{file, line, column, kind, subject, durationMs, limitMs}]`, `compilerExitCode`, `meta`.
+   - **에러 채널**: 컴파일러 진단(에러·워닝)은 모두 tool result success. `compilerExitCode`로 swiftc 종료 상태를 노출. `isError: true`는 toolchain 자체를 실행할 수 없는 경우에만 throw → JSON-RPC error로 흘러간다.
    - 워닝 정규식 (확정): 단일 일반화 패턴
      `^(.+?):(\d+):(\d+): warning: (.+?) took (\d+)ms to type-check \(limit: (\d+)ms\)$`
      `subject`(예: `expression`, `global function 'compute()'`, `instance method 'foo(_:)'`)를 verbatim 보존.

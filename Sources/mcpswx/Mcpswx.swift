@@ -7,6 +7,7 @@ struct Mcpswx {
         let toolchain = ToolchainResolver()
         let registry = ToolRegistry()
         await registry.register(PrintTargetInfoTool(toolchain: toolchain))
+        await registry.register(FindSlowTypecheckTool(toolchain: toolchain))
 
         let server = Server(
             info: .init(

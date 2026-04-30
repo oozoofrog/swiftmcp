@@ -63,4 +63,22 @@ public extension JSONValue {
         guard case .object(let dict) = self else { return nil }
         return dict[key]
     }
+
+    var asString: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var asInt: Int? {
+        switch self {
+        case .integer(let value): return Int(exactly: value)
+        case .double(let value): return Int(value)
+        default: return nil
+        }
+    }
+
+    var asBool: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
 }
