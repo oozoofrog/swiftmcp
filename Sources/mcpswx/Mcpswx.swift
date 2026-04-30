@@ -13,6 +13,7 @@ struct Mcpswx {
         await registry.register(EmitIRTool(toolchain: toolchain))
         await registry.register(BuildIsolatedSnippetTool(toolchain: toolchain))
         await registry.register(CompileStatsTool(toolchain: toolchain))
+        await registry.register(CallGraphTool(toolchain: toolchain))
 
         let server = Server(
             info: .init(
