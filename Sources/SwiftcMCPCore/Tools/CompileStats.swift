@@ -1,6 +1,6 @@
 import Foundation
 
-/// `compile_stats`: type-check a Swift file with `-stats-output-dir` and aggregate the
+/// `compile_stats`: type-check Swift inputs with `-stats-output-dir` and aggregate the
 /// frontend stats JSON. Returns top-N counters by raw value plus per-category sums for
 /// hot-spot analysis. Categories are the dotted prefix of each counter
 /// (`AST`, `Parse`, `Sema`, `IRGen`, `LLVM`, `SIL`, `Frontend`, …).
@@ -20,9 +20,11 @@ public struct CompileStatsTool: MCPTool {
     }
 
     private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
 
-    public init(toolchain: ToolchainResolver) {
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
         self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -30,7 +32,7 @@ public struct CompileStatsTool: MCPTool {
             name: "compile_stats",
             title: "Compile Stats",
             description: """
-            Type-check a Swift file with `-stats-output-dir <dir>` and aggregate the frontend
+            Type-check Swift inputs with `-stats-output-dir <dir>` and aggregate the frontend
             stats JSON. Each compilation emits ~100 counters across categories like AST, Parse, \
             Sema, IRGen, LLVM, SIL. The result includes top-N counters by raw value and a \
             per-category sum useful for spotting hot areas (e.g. solver explosions show up in \
@@ -39,33 +41,26 @@ public struct CompileStatsTool: MCPTool {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "top": .object([
                         "type": .string("integer"),
                         "description": .string("How many top counters to return. Default 20."),
                         "default": .integer(20)
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let topN = dict["top"]?.asInt ?? 20
-        let target = dict["target"]?.asString
+
+        let resolved = try await resolver.resolveArgs(for: input)
 
         let scratch = try CallScratch()
         defer { scratch.dispose() }
@@ -75,9 +70,9 @@ public struct CompileStatsTool: MCPTool {
         let start = Date()
         let outcome = try await invocation.run(
             modeArgs: ["-typecheck", "-stats-output-dir", statsDir.path],
-            inputFile: file,
+            inputFiles: resolved.inputFiles,
             outputFile: nil,
-            options: .init(target: target)
+            options: .init(resolved: resolved)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
@@ -89,7 +84,7 @@ public struct CompileStatsTool: MCPTool {
         let result = Result(
             meta: .init(
                 toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
-                target: target,
+                target: input.target,
                 durationMs: durationMs
             ),
             totalCounters: counters.count,

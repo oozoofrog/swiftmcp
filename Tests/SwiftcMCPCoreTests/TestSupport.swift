@@ -61,3 +61,15 @@ func makeServer(registry: ToolRegistry = ToolRegistry()) -> Server {
         registry: registry
     )
 }
+
+/// Resolves `Tests/Fixtures/<name>/` relative to the source-file location of the caller.
+/// Test targets don't own a resource bundle in this package, so fixtures are read by path.
+func fixturePath(_ relative: String, file: StaticString = #filePath) -> String {
+    let testFile = URL(fileURLWithPath: "\(file)", isDirectory: false)
+    // Tests/SwiftcMCPCoreTests/<file>.swift  ->  Tests/Fixtures/<relative>
+    let fixturesRoot = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appending(path: "Fixtures", directoryHint: .isDirectory)
+    return fixturesRoot.appending(path: relative).path
+}

@@ -1,6 +1,6 @@
 import Foundation
 
-/// `emit_sil`: emit Swift Intermediate Language for a Swift source file, write to a
+/// `emit_sil`: emit Swift Intermediate Language for Swift inputs, write to a
 /// temp file, and return the path.
 public struct EmitSILTool: MCPTool {
     public struct Result: Sendable, Codable, Equatable {
@@ -15,9 +15,11 @@ public struct EmitSILTool: MCPTool {
     }
 
     private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
 
-    public init(toolchain: ToolchainResolver) {
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
         self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -25,18 +27,16 @@ public struct EmitSILTool: MCPTool {
             name: "emit_sil",
             title: "Emit SIL",
             description: """
-            Emit Swift Intermediate Language for a source file via swiftc. Stage selects \
-            `raw` (silgen, before mandatory passes), `canonical` (default, after mandatory \
-            passes), or `lowered` (post-IRGen-prep). Optimization controls `-Onone`/`-O`/`-Osize`/\
-            `-Ounchecked`. SIL textual format is not version-stable across compiler releases.
+            Emit Swift Intermediate Language for a source file or directory via swiftc. Stage \
+            selects `raw` (silgen, before mandatory passes), `canonical` (default, after \
+            mandatory passes), or `lowered` (post-IRGen-prep). Optimization controls \
+            `-Onone`/`-O`/`-Osize`/`-Ounchecked`. SIL textual format is not version-stable \
+            across compiler releases.
             """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "stage": .object([
                         "type": .string("string"),
                         "description": .string("`raw`, `canonical`, or `lowered`. Default `canonical`."),
@@ -46,26 +46,20 @@ public struct EmitSILTool: MCPTool {
                         "type": .string("string"),
                         "description": .string("`none`, `speed`, `size`, or `unchecked`. Default `none`."),
                         "default": .string("none")
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let stage = dict["stage"]?.asString ?? "canonical"
         let optimizationKey = dict["optimization"]?.asString ?? "none"
-        let target = dict["target"]?.asString
 
         let modeArgs: [String]
         let fileExtension: String
@@ -87,22 +81,24 @@ public struct EmitSILTool: MCPTool {
             throw MCPError.invalidParams("`optimization` must be one of: none, speed, size, unchecked")
         }
 
+        let resolved = try await resolver.resolveArgs(for: input)
+
         let scratch = try PersistentScratch()
         let outputURL = scratch.directory.appending(path: fileExtension, directoryHint: .notDirectory)
 
         let start = Date()
         let outcome = try await invocation.run(
             modeArgs: modeArgs,
-            inputFile: file,
+            inputFiles: resolved.inputFiles,
             outputFile: outputURL,
-            options: .init(target: target, optimization: optimization)
+            options: .init(resolved: resolved, optimization: optimization)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
         let result = Result(
             meta: .init(
                 toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
-                target: target,
+                target: input.target,
                 durationMs: durationMs
             ),
             path: outputURL.path,

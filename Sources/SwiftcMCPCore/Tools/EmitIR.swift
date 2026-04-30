@@ -1,6 +1,6 @@
 import Foundation
 
-/// `emit_ir`: emit LLVM IR (or pre-LLVM-opt IR, or bitcode) for a Swift source file.
+/// `emit_ir`: emit LLVM IR (or pre-LLVM-opt IR, or bitcode) for Swift inputs.
 public struct EmitIRTool: MCPTool {
     public struct Result: Sendable, Codable, Equatable {
         public let meta: ToolOutputMeta
@@ -14,9 +14,11 @@ public struct EmitIRTool: MCPTool {
     }
 
     private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
 
-    public init(toolchain: ToolchainResolver) {
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
         self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -24,18 +26,15 @@ public struct EmitIRTool: MCPTool {
             name: "emit_ir",
             title: "Emit LLVM IR",
             description: """
-            Emit LLVM intermediate representation for a Swift source file. Stage selects \
-            `irgen` (textual IR before LLVM optimizations), `ir` (textual IR after LLVM \
+            Emit LLVM intermediate representation for a Swift source file or directory. Stage \
+            selects `irgen` (textual IR before LLVM optimizations), `ir` (textual IR after LLVM \
             optimizations, default), or `bc` (binary LLVM bitcode). Optimization controls \
             `-Onone`/`-O`/`-Osize`/`-Ounchecked`.
             """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "stage": .object([
                         "type": .string("string"),
                         "description": .string("`irgen`, `ir`, or `bc`. Default `ir`."),
@@ -45,26 +44,20 @@ public struct EmitIRTool: MCPTool {
                         "type": .string("string"),
                         "description": .string("`none`, `speed`, `size`, or `unchecked`. Default `none`."),
                         "default": .string("none")
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let stage = dict["stage"]?.asString ?? "ir"
         let optimizationKey = dict["optimization"]?.asString ?? "none"
-        let target = dict["target"]?.asString
 
         let modeArgs: [String]
         let fileExtension: String
@@ -90,22 +83,24 @@ public struct EmitIRTool: MCPTool {
             throw MCPError.invalidParams("`optimization` must be one of: none, speed, size, unchecked")
         }
 
+        let resolved = try await resolver.resolveArgs(for: input)
+
         let scratch = try PersistentScratch()
         let outputURL = scratch.directory.appending(path: fileExtension, directoryHint: .notDirectory)
 
         let start = Date()
         let outcome = try await invocation.run(
             modeArgs: modeArgs,
-            inputFile: file,
+            inputFiles: resolved.inputFiles,
             outputFile: outputURL,
-            options: .init(target: target, optimization: optimization)
+            options: .init(resolved: resolved, optimization: optimization)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
         let result = Result(
             meta: .init(
                 toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
-                target: target,
+                target: input.target,
                 durationMs: durationMs
             ),
             path: outputURL.path,

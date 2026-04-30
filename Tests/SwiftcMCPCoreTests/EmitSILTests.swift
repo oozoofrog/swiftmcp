@@ -19,7 +19,9 @@ struct EmitSILTests {
         defer { scratch.dispose() }
 
         let tool = EmitSILTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object(["file": .string(url.path)]))
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(url.path)])
+        ]))
 
         let result = try decodeResult(EmitSILTool.Result.self, response)
         #expect(result.stage == "canonical")
@@ -37,7 +39,7 @@ struct EmitSILTests {
 
         let tool = EmitSILTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "stage": .string("raw")
         ]))
 
@@ -54,7 +56,7 @@ struct EmitSILTests {
 
         let tool = EmitSILTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "optimization": .string("speed")
         ]))
 
@@ -67,7 +69,7 @@ struct EmitSILTests {
         let tool = EmitSILTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "stage": .string("nonsense")
             ]))
         }

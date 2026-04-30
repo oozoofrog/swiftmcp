@@ -1,7 +1,7 @@
 import Foundation
 
-/// `api_surface`: emit DocC-format symbol graph + API descriptor for a Swift source
-/// file and return paths + counts. The full JSON artifacts live on disk in a
+/// `api_surface`: emit DocC-format symbol graph + API descriptor for Swift inputs and
+/// return paths + counts. The full JSON artifacts live on disk in a
 /// `PersistentScratch` directory; this tool reports their paths plus aggregate
 /// statistics (per-kind counts, totals) so clients can decide whether to open the
 /// artifact files or work from summaries alone.
@@ -29,10 +29,12 @@ public struct ApiSurfaceTool: MCPTool {
         public let compilerStderr: String?
     }
 
-    private let toolchain: ToolchainResolver
+    private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
 
-    public init(toolchain: ToolchainResolver) {
-        self.toolchain = toolchain
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
+        self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -40,7 +42,7 @@ public struct ApiSurfaceTool: MCPTool {
             name: "api_surface",
             title: "API Surface",
             description: """
-            Emit a DocC-format symbol graph and an API descriptor for a Swift source file. \
+            Emit a DocC-format symbol graph and an API descriptor for Swift inputs. \
             The tool runs `swiftc -emit-module -emit-symbol-graph -emit-api-descriptor-path` \
             with all build artifacts (the `.swiftmodule` and friends) placed in a temp \
             directory so the caller's working directory stays clean. Returns the artifact \
@@ -50,73 +52,78 @@ public struct ApiSurfaceTool: MCPTool {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "module_name": .object([
                         "type": .string("string"),
-                        "description": .string("Module name for the emitted symbol graph. Defaults to the file's basename without extension.")
+                        "description": .string("Module name for the emitted symbol graph. Defaults to the input's basename without extension. (Also accepted via `input.module_name` for the directory case.)")
                     ]),
                     "min_access_level": .object([
                         "type": .string("string"),
                         "description": .string("`-symbol-graph-minimum-access-level` value: `open`, `public`, `package`, `internal`, `fileprivate`, or `private`. Default `public`."),
                         "default": .string("public")
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
-        let target = dict["target"]?.asString
+        let input = try BuildInput.decode(dict["input"])
         let minAccessLevel = dict["min_access_level"]?.asString ?? "public"
         guard ["open", "public", "package", "internal", "fileprivate", "private"].contains(minAccessLevel) else {
             throw MCPError.invalidParams("`min_access_level` must be one of: open, public, package, internal, fileprivate, private")
         }
+
+        let resolved = try await resolver.resolveArgs(for: input)
+        let topLevelOverride = dict["module_name"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
         let moduleName: String
-        if let provided = dict["module_name"]?.asString, !provided.isEmpty {
-            moduleName = provided
-        } else {
-            let url = URL(fileURLWithPath: file)
-            let basename = url.deletingPathExtension().lastPathComponent
+        if let topLevelOverride {
+            moduleName = topLevelOverride
+        } else if let resolvedName = resolved.moduleName, !resolvedName.isEmpty {
+            moduleName = resolvedName
+        } else if let firstFile = resolved.inputFiles.first {
+            let basename = URL(fileURLWithPath: firstFile).deletingPathExtension().lastPathComponent
             moduleName = basename.isEmpty ? "Module" : basename
+        } else {
+            moduleName = "Module"
         }
 
-        let resolved = try await toolchain.resolve()
         let scratch = try PersistentScratch()
         let dir = scratch.directory
         let modulePath = dir.appending(path: "\(moduleName).swiftmodule", directoryHint: .notDirectory)
         let apiPath = dir.appending(path: "api.json", directoryHint: .notDirectory)
 
-        var arguments: [String] = [
+        let extraArgs: [String] = [
             "-emit-module",
             "-emit-module-path", modulePath.path,
             "-emit-symbol-graph",
             "-emit-symbol-graph-dir", dir.path,
             "-emit-api-descriptor-path", apiPath.path,
-            "-symbol-graph-minimum-access-level", minAccessLevel,
-            "-module-name", moduleName
+            "-symbol-graph-minimum-access-level", minAccessLevel
         ]
-        if let target {
-            arguments.append(contentsOf: ["-target", target])
-        }
-        arguments.append(file)
+
+        // Invocation auto-injects -module-name when options.moduleName is set; pass it
+        // via Options so we don't double up.
+        var options = SwiftcInvocation.Options(resolved: resolved)
+        options = SwiftcInvocation.Options(
+            target: options.target,
+            optimization: options.optimization,
+            moduleName: moduleName,
+            searchPaths: options.searchPaths,
+            frameworkSearchPaths: options.frameworkSearchPaths,
+            extraSwiftcArgs: options.extraSwiftcArgs + extraArgs
+        )
 
         let start = Date()
-        let processResult = try await runProcess(
-            executable: resolved.swiftcPath,
-            arguments: arguments
+        let outcome = try await invocation.run(
+            modeArgs: [],
+            inputFiles: resolved.inputFiles,
+            outputFile: nil,
+            options: options
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
@@ -127,8 +134,8 @@ public struct ApiSurfaceTool: MCPTool {
 
         let result = Result(
             meta: .init(
-                toolchain: .init(path: resolved.swiftcPath, version: resolved.version),
-                target: target,
+                toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
+                target: input.target,
                 durationMs: durationMs
             ),
             moduleName: moduleName,
@@ -140,8 +147,8 @@ public struct ApiSurfaceTool: MCPTool {
             totalSymbols: totalSymbols,
             totalRelationships: totalRelationships,
             symbolKinds: symbolKinds,
-            compilerExitCode: processResult.exitCode,
-            compilerStderr: processResult.standardError.isEmpty ? nil : processResult.standardError
+            compilerExitCode: outcome.process.exitCode,
+            compilerStderr: outcome.process.standardError.isEmpty ? nil : outcome.process.standardError
         )
 
         let text = try renderJSON(result)

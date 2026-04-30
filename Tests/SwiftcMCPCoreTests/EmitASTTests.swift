@@ -19,7 +19,9 @@ struct EmitASTTests {
         defer { scratch.dispose() }
 
         let tool = EmitASTTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object(["file": .string(url.path)]))
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(url.path)])
+        ]))
 
         #expect(response.isError == false)
         let result = try decodeResult(EmitASTTool.Result.self, response)
@@ -39,7 +41,7 @@ struct EmitASTTests {
 
         let tool = EmitASTTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "format": .string("json")
         ]))
 
@@ -54,7 +56,7 @@ struct EmitASTTests {
         let tool = EmitASTTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "format": .string("xml")
             ]))
         }

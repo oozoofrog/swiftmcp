@@ -33,7 +33,7 @@ struct ApiSurfaceTests {
 
         let tool = ApiSurfaceTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "module_name": .string("Lib")
         ]))
 
@@ -65,7 +65,7 @@ struct ApiSurfaceTests {
 
         let tool = ApiSurfaceTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path)
+            "input": .object(["file": .string(url.path)])
         ]))
         let result = try decodeResult(ApiSurfaceTool.Result.self, response)
         #expect(result.moduleName == "Lib") // basename of Lib.swift
@@ -78,12 +78,12 @@ struct ApiSurfaceTests {
 
         let tool = ApiSurfaceTool(toolchain: ToolchainResolver())
         let publicCall = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "module_name": .string("Lib"),
             "min_access_level": .string("public")
         ]))
         let internalCall = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "module_name": .string("Lib"),
             "min_access_level": .string("internal")
         ]))
@@ -98,23 +98,22 @@ struct ApiSurfaceTests {
         let tool = ApiSurfaceTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "min_access_level": .string("nope")
             ]))
         }
     }
 
     @Test
-    func missingFileSurfacesAsCompilerError() async throws {
+    func missingFileRejectedByResolver() async throws {
         let tool = ApiSurfaceTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object([
-            "file": .string("/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"),
-            "module_name": .string("Missing")
-        ]))
-        #expect(response.isError == false)
-        let result = try decodeResult(ApiSurfaceTool.Result.self, response)
-        #expect(result.compilerExitCode != 0)
-        #expect(result.totalSymbols == 0)
+        let bogus = "/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"
+        await #expect(throws: MCPError.self) {
+            try await tool.call(arguments: .object([
+                "input": .object(["file": .string(bogus)]),
+                "module_name": .string("Missing")
+            ]))
+        }
     }
 
     @Test

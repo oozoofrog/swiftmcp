@@ -1,12 +1,12 @@
 import Foundation
 
-/// `find_slow_typecheck`: type-check a Swift file with slow-typecheck warnings enabled,
+/// `find_slow_typecheck`: type-check Swift inputs with slow-typecheck warnings enabled,
 /// then return parsed warnings as findings.
 ///
 /// Calls `swiftc -typecheck -Xfrontend -warn-long-expression-type-checking=<n>
-/// -Xfrontend -warn-long-function-bodies=<n> <file>`. Warnings emitted by the compiler
-/// are extracted from stderr regardless of the compile exit status — compile errors
-/// are surfaced via `compilerExitCode` rather than `isError`, since compiler
+/// -Xfrontend -warn-long-function-bodies=<n> <inputs...>`. Warnings emitted by the
+/// compiler are extracted from stderr regardless of compile exit status — compile
+/// errors are surfaced via `compilerExitCode` rather than `isError`, since compiler
 /// diagnostics are themselves the analysis output.
 public struct FindSlowTypecheckTool: MCPTool {
     public struct Result: Sendable, Codable, Equatable {
@@ -15,11 +15,13 @@ public struct FindSlowTypecheckTool: MCPTool {
         public let compilerExitCode: Int32
     }
 
-    private let toolchain: ToolchainResolver
+    private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
     private let parser = WarningParser()
 
-    public init(toolchain: ToolchainResolver) {
-        self.toolchain = toolchain
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
+        self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -27,8 +29,8 @@ public struct FindSlowTypecheckTool: MCPTool {
             name: "find_slow_typecheck",
             title: "Find Slow Type-checking",
             description: """
-            Type-check a Swift source file with `-warn-long-expression-type-checking` and \
-            `-warn-long-function-bodies` enabled, then return any expression / function \
+            Type-check a Swift source file or directory with `-warn-long-expression-type-checking` \
+            and `-warn-long-function-bodies` enabled, then return any expression / function \
             bodies that exceeded the given thresholds (in milliseconds). Compiler errors \
             do not fail the tool — `compilerExitCode` reports the swiftc exit status while \
             `findings` reports the long-typecheck warnings parsed from stderr.
@@ -36,10 +38,7 @@ public struct FindSlowTypecheckTool: MCPTool {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file (absolute or relative to CWD).")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "expression_threshold_ms": .object([
                         "type": .string("integer"),
                         "description": .string("Warn on expressions whose type-checking takes more than this many milliseconds. Default 100."),
@@ -51,44 +50,44 @@ public struct FindSlowTypecheckTool: MCPTool {
                         "default": .integer(100)
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let expressionThreshold = dict["expression_threshold_ms"]?.asInt ?? 100
         let functionThreshold = dict["function_threshold_ms"]?.asInt ?? 100
 
-        let resolved = try await toolchain.resolve()
+        let resolved = try await resolver.resolveArgs(for: input)
 
         let start = Date()
-        let processResult = try await runProcess(
-            executable: resolved.swiftcPath,
-            arguments: [
+        let outcome = try await invocation.run(
+            modeArgs: [
                 "-typecheck",
                 "-Xfrontend", "-warn-long-expression-type-checking=\(expressionThreshold)",
-                "-Xfrontend", "-warn-long-function-bodies=\(functionThreshold)",
-                file
-            ]
+                "-Xfrontend", "-warn-long-function-bodies=\(functionThreshold)"
+            ],
+            inputFiles: resolved.inputFiles,
+            outputFile: nil,
+            options: .init(resolved: resolved)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
-        let findings = parser.parse(processResult.standardError)
+        let findings = parser.parse(outcome.process.standardError)
 
         let result = Result(
             meta: .init(
-                toolchain: .init(path: resolved.swiftcPath, version: resolved.version),
-                target: nil,
+                toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
+                target: input.target,
                 durationMs: durationMs
             ),
             findings: findings,
-            compilerExitCode: processResult.exitCode
+            compilerExitCode: outcome.process.exitCode
         )
 
         let text = try renderJSON(result)

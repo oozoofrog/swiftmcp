@@ -35,9 +35,11 @@ public struct CallGraphTool: MCPTool {
     }
 
     private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
 
-    public init(toolchain: ToolchainResolver) {
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
         self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -45,7 +47,7 @@ public struct CallGraphTool: MCPTool {
             name: "call_graph",
             title: "Call Graph",
             description: """
-            Emit canonical SIL for a Swift source file and extract a per-function summary of \
+            Emit canonical SIL for Swift inputs and extract a per-function summary of \
             direct callees (`function_ref` targets) and call-site instruction counts \
             (`apply`/`try_apply`/`begin_apply`, `partial_apply`, `witness_method`, \
             `class_method`, `super_method`, `objc_method`). Mangled names are reported \
@@ -54,36 +56,29 @@ public struct CallGraphTool: MCPTool {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "optimization": .object([
                         "type": .string("string"),
                         "description": .string("`none`, `speed`, `size`, or `unchecked`. Default `none` (raw call sites)."),
                         "default": .string("none")
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let optimizationKey = dict["optimization"]?.asString ?? "none"
-        let target = dict["target"]?.asString
         guard let optimization = SwiftcInvocation.Options.Optimization(rawValue: optimizationKey) else {
             throw MCPError.invalidParams("`optimization` must be one of: none, speed, size, unchecked")
         }
+
+        let resolved = try await resolver.resolveArgs(for: input)
 
         let scratch = try CallScratch()
         defer { scratch.dispose() }
@@ -92,9 +87,9 @@ public struct CallGraphTool: MCPTool {
         let start = Date()
         let outcome = try await invocation.run(
             modeArgs: ["-emit-sil"],
-            inputFile: file,
+            inputFiles: resolved.inputFiles,
             outputFile: silURL,
-            options: .init(target: target, optimization: optimization)
+            options: .init(resolved: resolved, optimization: optimization)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
@@ -104,7 +99,7 @@ public struct CallGraphTool: MCPTool {
         let result = Result(
             meta: .init(
                 toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
-                target: target,
+                target: input.target,
                 durationMs: durationMs
             ),
             summary: parsed.summary,

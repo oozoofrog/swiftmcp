@@ -4,11 +4,18 @@ import Foundation
 /// argument lists in a consistent order, runs the process, and returns the result
 /// alongside resolved toolchain metadata.
 ///
-/// Argument order: `<mode-args> [-target <triple>] [<-Onone|-O|-Osize|-Ounchecked>] [-o <output>] <input>`
+/// Argument order:
+/// `<mode-args> [-target <triple>] [<-Onone|-O|-Osize|-Ounchecked>]
+///  [-module-name <name>] [-I <path>...] [-F <path>...] [<extraSwiftcArgs>]
+///  [-o <output>] <input-files...>`
 public struct SwiftcInvocation: Sendable {
     public struct Options: Sendable, Equatable {
         public let target: String?
         public let optimization: Optimization?
+        public let moduleName: String?
+        public let searchPaths: [String]
+        public let frameworkSearchPaths: [String]
+        public let extraSwiftcArgs: [String]
 
         public enum Optimization: String, Sendable, CaseIterable {
             case none
@@ -32,9 +39,20 @@ public struct SwiftcInvocation: Sendable {
             }
         }
 
-        public init(target: String? = nil, optimization: Optimization? = nil) {
+        public init(
+            target: String? = nil,
+            optimization: Optimization? = nil,
+            moduleName: String? = nil,
+            searchPaths: [String] = [],
+            frameworkSearchPaths: [String] = [],
+            extraSwiftcArgs: [String] = []
+        ) {
             self.target = target
             self.optimization = optimization
+            self.moduleName = moduleName
+            self.searchPaths = searchPaths
+            self.frameworkSearchPaths = frameworkSearchPaths
+            self.extraSwiftcArgs = extraSwiftcArgs
         }
     }
 
@@ -51,26 +69,63 @@ public struct SwiftcInvocation: Sendable {
 
     public func run(
         modeArgs: [String],
-        inputFile: String,
+        inputFiles: [String],
         outputFile: URL?,
         options: Options
     ) async throws -> Outcome {
         let resolved = try await resolver.resolve()
         var args = modeArgs
+        // swiftc rejects `-o` with multiple input files unless whole-module mode is on
+        // (e.g. `-dump-ast -o foo.txt a.swift b.swift` errors out). Inject `-wmo` once
+        // the caller is asking for a single combined output across multiple inputs.
+        if outputFile != nil
+            && inputFiles.count > 1
+            && !modeArgs.contains("-wmo")
+            && !modeArgs.contains("-whole-module-optimization")
+            && !options.extraSwiftcArgs.contains("-wmo")
+            && !options.extraSwiftcArgs.contains("-whole-module-optimization")
+        {
+            args.append("-wmo")
+        }
         if let target = options.target {
             args.append(contentsOf: ["-target", target])
         }
         if let optimization = options.optimization {
             args.append(optimization.flag)
         }
+        if let moduleName = options.moduleName {
+            args.append(contentsOf: ["-module-name", moduleName])
+        }
+        for path in options.searchPaths {
+            args.append(contentsOf: ["-I", path])
+        }
+        for path in options.frameworkSearchPaths {
+            args.append(contentsOf: ["-F", path])
+        }
+        args.append(contentsOf: options.extraSwiftcArgs)
         if let outputFile {
             args.append(contentsOf: ["-o", outputFile.path])
         }
-        args.append(inputFile)
+        args.append(contentsOf: inputFiles)
         let processResult = try await runProcess(
             executable: resolved.swiftcPath,
             arguments: args
         )
         return Outcome(process: processResult, toolchain: resolved)
+    }
+}
+
+public extension SwiftcInvocation.Options {
+    /// Build options from a resolved `BuildInput`, copying over target/moduleName/searchPaths.
+    /// Tools layer their own knobs (optimization, extra mode args) on top via the regular init.
+    init(resolved: ResolvedBuildArgs, optimization: Optimization? = nil) {
+        self.init(
+            target: resolved.target,
+            optimization: optimization,
+            moduleName: resolved.moduleName,
+            searchPaths: resolved.searchPaths,
+            frameworkSearchPaths: resolved.frameworkSearchPaths,
+            extraSwiftcArgs: resolved.extraSwiftcArgs
+        )
     }
 }
