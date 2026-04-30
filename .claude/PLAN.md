@@ -22,7 +22,7 @@
 - 빌드 시스템: **Swift Package Manager** (`Package.swift`).
 - 컴파일러 호출 대상: 시스템에 설치된 **`swiftc` / `swift-frontend`**.
 - 외부 라이브러리: **없음**. MCP 2025-11-25 stdio JSON-RPC 서버를 Foundation만으로 직접 구현. 사양 문서가 1차 출처.
-- 최소 환경: Swift 6.0+, macOS 13+ (현재 toolchain Swift 6.3.1 / Xcode 26 / arm64-apple-macosx26).
+- 최소 환경: Swift 6.0+, macOS 13+ (현재 toolchain Swift 6.3.1 / Xcode 26 / arm64-apple-macosx26.0).
 
 ### 0.3 통신 규약
 
@@ -44,11 +44,10 @@
 
 각 도구는 6단계 중 어느 입력에서 동작 가능한지를 메타데이터로 노출한다. Stage별 확장은 이 6단계 축을 따라간다.
 
-### 0.6 타깃 플랫폼 (분석 대상 코드의 플랫폼)
+### 0.6 타깃 플랫폼
 
-본 MCP가 분석할 수 있는 코드의 타깃: macOS, iOS, iPadOS, watchOS, tvOS, visionOS, simulator 변형, macCatalyst.
-
-본 MCP 자체가 실행되는 호스트는 macOS 13+. 분석 대상의 plat과 호스트는 분리된 개념.
+분석 대상 코드의 타깃: macOS, iOS, iPadOS, watchOS, tvOS, visionOS, simulator 변형, macCatalyst.
+호스트(본 MCP가 실행되는 곳): macOS 13+. 두 개념은 분리된 채로 다룬다.
 
 ## 1. 패키지 구조
 
@@ -57,15 +56,14 @@ swiftmcp/
 ├── Package.swift             # Foundation only
 ├── Sources/
 │   ├── SwiftcMCPCore/        # library product
-│   │   ├── Toolchain/        # swiftc 호출 추상화, 합성 입력, 산출물 회수
-│   │   ├── Execution/        # 격리 빌드/실행 인프라 (Stage 1+에서 채움)
+│   │   ├── Toolchain/        # ProcessRunner, ToolchainResolver, SwiftcInvocation
+│   │   ├── Execution/        # 격리 빌드/실행 인프라 (Stage 1+)
 │   │   ├── Tools/            # 개별 분석 도구 모듈 (도구당 1파일 원칙)
-│   │   ├── Diagnostics/      # 컴파일러 진단 파싱
-│   │   ├── Protocol/         # JSON-RPC + MCP 메시지 타입, server, stdio loop
-│   │   └── Result/           # Codable 응답 타입
+│   │   ├── Diagnostics/      # 컴파일러 진단 파싱 (Stage 1+)
+│   │   ├── Protocol/         # JSON-RPC + MCP 메시지 + Server + StdioLoop
+│   │   └── Result/           # Codable 응답 타입 (Stage 1+)
 │   └── mcpswx/               # executable product
-│       ├── Mcpswx.swift      # @main, server 부트스트랩
-│       └── ToolRegistry.swift  # 라이브러리 도구를 MCP Tool로 노출
+│       └── Mcpswx.swift      # @main, server 부트스트랩
 └── Tests/
     └── SwiftcMCPCoreTests/
 ```
@@ -75,80 +73,116 @@ swiftmcp/
 - 도구 1개 = `SwiftcMCPCore/Tools/` 1파일 + 테스트 1파일.
 - 외부에 노출되는 결과 타입은 모두 `Codable`. 와이어 포맷이 곧 결과 타입 (매핑 레이어 없음).
 
-## 2. Stage 0 — 인프라
+## 2. Stage 0 — 인프라 (완료)
 
-### 2.1 종료 조건
+종료 조건 모두 충족됨:
 
-- `swift build`가 성공한다.
-- `swift test`가 통과한다.
-- `mcpswx`가 stdio MCP 서버로 동작한다 — `initialize` / `notifications/initialized` 핸드셰이크 → `tools/list` → `tools/call` → `ping` 사이클이 사양 클라이언트와 정상 작동.
-- 검증용 도구 **`print_target_info`** 1개가 동작한다 — 입력으로 triple을 받아 `swiftc -print-target-info -target <triple>`을 호출하고 stdout JSON을 content로 반환.
-- 이 한 도구로 검증되는 인프라:
-  - SPM 두 타깃 분리 (library + executable, 외부 의존성 0)
-  - JSON-RPC envelope (request/response/notification) 직렬화·역직렬화
-  - stdio loop (newline-delimited JSON, stdout 단일 채널 보장, stderr 로그 분리)
-  - 라이프사이클(initialize/initialized/ping) + tools 메서드 라우팅
-  - 외부 프로세스 호출 추상화 (toolchain resolver, 인자 조립, stdout/stderr 분리, exit code, timeout)
-  - 임시 디렉토리 정책 (이 도구는 산출물 없음 — 정책 골격만 마련)
-  - 에러 채널 매핑
+- ✓ `swift build` 통과, `swift test` 28개 / 4 suite 전부 통과.
+- ✓ `mcpswx`가 stdio MCP 서버로 동작 (initialize / initialized / tools/list / tools/call / ping).
+- ✓ `print_target_info` 도구 동작 (실제 swiftc 호출, JSON 회수).
+- ✓ 외부 의존성 0.
 
-### 2.2 구체 작업
+확립된 컴포넌트:
+- `Protocol/`: JSON-RPC envelope, MCP 메시지, `Server` actor, `StdioLoop` actor (TaskGroup으로 in-flight 추적, EOF 시 모두 await 후 종료).
+- `Toolchain/ProcessRunner`: 외부 프로세스를 detached task에서 실행 + stdout/stderr/exit 회수.
+- `Toolchain/ToolchainResolver`: `TOOLCHAINS` env → `xcrun -f swiftc` → `which` 순으로 해석, 결과 캐시.
+- `Tools/PrintTargetInfo`: 첫 도구.
 
-1. `Package.swift` — library + executable 두 product, 외부 의존성 없음, Swift tools 6.0.
-2. `SwiftcMCPCore/Protocol/` — JSON-RPC 타입(`Request`, `Response`, `Notification`, `ID`, `ErrorObject`), MCP 메시지 타입(initialize, ping, tools/list, tools/call, notifications/cancelled, notifications/initialized), `Server` (handler dispatch + 라이프사이클), `StdioLoop` (line-buffered IO + actor 직렬화).
-3. `SwiftcMCPCore/Toolchain/` — `ToolchainResolver` (xcrun 우선, `TOOLCHAINS` env 우선순위 결정), `SwiftcInvocation` (인자 빌드 + 외부 프로세스 실행 + 결과 회수).
-4. `SwiftcMCPCore/Result/` — 도구 결과 공통 타입 (`ToolOutput`, `ProcessResult`, `Diagnostic`).
-5. `SwiftcMCPCore/Tools/PrintTargetInfo.swift` — 첫 도구 구현.
-6. `mcpswx/Mcpswx.swift` — Server 부트스트랩, 도구 등록, StdioLoop 시작.
-7. `mcpswx/ToolRegistry.swift` — 라이브러리 도구 → MCP Tool 정의 매핑.
-8. 테스트:
-   - JSON-RPC envelope 라운드트립.
-   - 라이프사이클 핸드셰이크.
-   - 알 수 없는 메서드/알 수 없는 도구 → 적절한 JSON-RPC 에러.
-   - `ToolchainResolver`가 시스템 swiftc를 찾아낸다.
-   - `SwiftcInvocation`이 `--version` 호출에 성공한다.
-   - `PrintTargetInfo` 도구가 유효 triple에 대해 JSON을 반환한다.
-   - 잘못된 triple에 대해 Tool Result에 컴파일러 stderr를 담는다.
+Stage 0 진입 시 결정된 사항:
+- **임시 파일 retention**: 호출당 디렉토리(`$TMPDIR/swiftmcp-<uuid>/`)를 만들고, 도구 호출 종료 시 즉시 삭제. TTL 기반 캐시는 도입하지 않음 (요청 단위 격리가 더 단순).
+- **cancellation**: `notifications/cancelled`을 Server가 받아 in-flight request id로 자식 프로세스 종료 신호로 매핑. Stage 0의 도구는 빠르게 끝나 실효 없음 — Stage 1에서 자식 프로세스 추적 인프라와 함께 도입.
+- **progress**: `_meta.progressToken`은 Stage 1에서도 미사용. Stage 2의 long-running 도구 도입 시점에 검토.
 
-### 2.3 결정 미뤄둠 (Stage 0 진입 시 결정)
-
-- 임시 파일 retention 정책의 정확한 모양 (호출 종료 시 즉시 삭제 vs TTL 기반).
-- `notifications/cancelled` 도착 시 본 MCP의 in-flight 처리 단위. Stage 0의 도구는 빠르게 끝나므로 cancel 신호 수신만 처리하고 실제 abort는 Stage 1+ long-running 도구에서 자식 프로세스 종료 신호로 매핑.
-- `_meta.progressToken`이 들어왔을 때 progress 노티피케이션 발송 정책. Stage 0는 미사용.
-
-## 3. Stage 1 — 단일 파일 입력 + 첫 도구들
+## 3. Stage 1 — 단일 파일 입력 + 4개 도구
 
 ### 3.1 종료 조건
 
 다음 4개 도구가 단일 `.swift` 파일 입력에 대해 동작한다.
 
-1. **`find_slow_typecheck`** — 표현식·함수 본문 type-check 시간 진단을 임계값(ms)으로 받아 `[{file,line,col,ms,kind}]` 반환.
-   - 호출: `swiftc -typecheck -Xfrontend -warn-long-expression-type-checking=<ms> -Xfrontend -warn-long-function-bodies=<ms> <file>`
-   - 출력은 stderr의 워닝 라인 파싱.
+1. **`find_slow_typecheck`**
+   - 입력: `file: string` (절대 경로 또는 `working_directory` 상대), `expression_threshold_ms: int` (기본 100), `function_threshold_ms: int` (기본 100).
+   - 동작: `swiftc -typecheck -Xfrontend -warn-long-expression-type-checking=<n> -Xfrontend -warn-long-function-bodies=<n> <file>` 호출.
+   - 출력: `result.findings` = `[{file, line, column, ms, kind: "expression"|"function", excerpt?: string}]`. `kind`는 워닝 본문에서 추출 (`function` 케이스는 함수 이름도 포함).
+   - 워닝 정규식 (확정):
+     - 표현식: `^(.+):(\d+):(\d+): warning: expression took (\d+)ms to type-check \(limit: (\d+)ms\)$`
+     - 함수: `^(.+):(\d+):(\d+): warning: global function '(.+)' took (\d+)ms to type-check \(limit: (\d+)ms\)$` (메서드는 `instance method`/`static method`/`initializer`/`closure` 등 변형 가능 — 정규식은 키워드 화이트리스트로 일반화).
 
-2. **`emit_ast`** / **`emit_sil`** / **`emit_ir`** — AST/SIL/IR 추출. 산출물은 임시 파일에 저장, content는 경로 + 크기 요약.
-   - AST: `-dump-ast` 텍스트 또는 `-dump-ast -dump-ast-format json`. **JSON 포맷 비안정성 메타에 명시.**
-   - SIL: `-emit-silgen` (raw), `-emit-sil` (canonical), `-emit-sil -O` (optimized). 호출자가 단계 선택.
-   - IR: `-emit-irgen` (pre-LLVM-opt), `-emit-ir` (post-LLVM-opt), `-emit-bc` (bitcode).
+2. **`emit_ast`** / **`emit_sil`** / **`emit_ir`** (3개 도구를 한 묶음으로 구현하되 별도 도구로 노출)
+   - 입력 공통: `file: string`, `target: string?` (없으면 호스트 기본).
+   - 추가 입력:
+     - `emit_ast`: `format: "text" | "json" | "json-zlib"` (기본 `text`).
+     - `emit_sil`: `stage: "raw" | "canonical" | "lowered"` (기본 `canonical`), `optimization: "none" | "speed" | "size" | "unchecked"` (기본 `none`).
+     - `emit_ir`: `stage: "irgen" | "ir" | "bc"` (기본 `ir`), `optimization` 동일.
+   - 동작: 호출당 임시 디렉토리에 산출물 파일을 떨군 뒤 경로 + 크기 + toolchain 버전을 결과로 반환. 산출물 본문은 content에 포함하지 않음 (응답 크기 정책 §0.4).
+   - 출력: `result.path: string`, `result.bytes: int`, `result.toolchain: {path, version}`, `result.format_unstable: bool` (AST JSON과 SIL/IR 텍스트는 toolchain 간 호환 비보장 — 메타에 표시).
+   - 상세 swiftc 매핑 (`.claude/references/swiftc.md` 참조):
+     - AST text: `-dump-ast`, JSON: `-dump-ast -dump-ast-format json`.
+     - SIL: `-emit-silgen` (raw), `-emit-sil` (canonical), `-emit-lowered-sil` (lowered).
+     - IR: `-emit-irgen`, `-emit-ir`, `-emit-bc`.
+     - optimization: `-Onone` / `-O` / `-Osize` / `-Ounchecked`.
 
-3. **`build_isolated_snippet`** — 클라이언트가 합성한 Swift 코드를 받아 격리 빌드/실행하고 stdout/stderr/exit code 반환.
-   - 가벼운 경로: `swiftc -frontend -interpret <synthesized.swift>` — 빌드 산출물 없이 즉시 실행.
-   - 무거운 경로: `swiftc -o <tmp>/exe <synthesized.swift>` 후 별도 프로세스로 실행 — sandbox/timeout 풍부 적용.
-   - Stage 1은 가벼운 경로 1개로 시작. 무거운 경로는 Stage 2+에서 추가.
-   - 입력은 클라이언트가 합성한 단일 텍스트. Stage 1은 슬라이싱·stub 자동 생성 없음.
+3. **`build_isolated_snippet`**
+   - 입력: `code: string` (Swift 소스), `target: string?` (없으면 호스트 기본), `timeout_ms: int?` (기본 10000), `args: string[]?` (피호출 프로그램에 전달할 `argv`).
+   - 동작: 임시 디렉토리에 `<dir>/Sources/main.swift`로 코드 저장 → `swiftc -O -o <dir>/exe <dir>/Sources/main.swift` 빌드 → 빌드 성공 시 자식 프로세스로 `exe` 실행 → stdout/stderr/exit/duration 회수.
+   - 가벼운 경로(`swiftc -frontend -interpret`)는 macOS 26 환경에서 stdlib 로드가 실패하는 것이 확인됨. Stage 1은 **무거운 경로(빌드+실행) 단일**로 시작.
+   - 출력: 빌드 단계 진단(있으면) + 실행 stdout / stderr / exit code / 실행 시간. 빌드 실패는 Tool Result success + content에 진단 (분석 결과는 진단 자체가 산출물). 자식 프로세스 launch 실패·timeout은 `isError: true`.
 
-### 3.2 검증 항목
+### 3.2 작업 분할 (커밋 단위)
 
-- type-check 워닝 파싱이 다양한 위치 형식(파일/함수/표현식)에서 안정적인가.
-- AST/SIL/IR 산출물이 임시 디렉토리에 격리되며, 호출 종료 후 정리되는가.
-- `build_isolated_snippet`의 stdout/stderr 캡처가 stdio 프로토콜 채널과 충돌하지 않는가 (격리 실행은 *자식* 프로세스, MCP는 *부모* 프로세스).
-- timeout 도달 시 자식 프로세스가 깔끔히 종료되고 결과에 timeout 마커가 담기는가.
-- `notifications/cancelled` 도착 시 자식 프로세스도 종료되는가.
+각 단계 종료 시 빌드 + 테스트 통과 검증. 단계 간 의존: 상위 단계가 모두 정상이어야 다음 진행.
 
-### 3.3 결정 미뤄둠
+#### Stage 1.A — 진단 파싱과 임시 디렉토리 인프라
+- `Diagnostics/CompilerWarning.swift`: 워닝 라인 1개의 정규식 매칭 + 구조체.
+- `Diagnostics/WarningParser.swift`: stderr 전체 텍스트 → `[Warning]` 추출.
+- `Execution/CallScratch.swift`: 호출당 임시 디렉토리(`$TMPDIR/swiftmcp-<uuid>/`) 생성 + `defer`로 정리.
+- `Result/ToolOutput.swift`: 도구 응답에 항상 포함될 메타(`toolchain`, `target`, `duration_ms`).
+- 단위 테스트: 두 정규식이 sample 워닝 라인을 정확히 추출 / scratch 디렉토리가 호출 후 사라짐.
 
-- `build_isolated_snippet`의 sandbox 정책 — `-disable-sandbox` 사용 여부, 자식 프로세스에 환경변수·작업 디렉토리 차단을 어디까지 적용할지.
-- 컴파일러 진단을 도구 결과의 어떤 모양으로 정규화할지 (라인 텍스트 그대로 vs. 파싱된 구조).
+#### Stage 1.B — `find_slow_typecheck`
+- `Tools/FindSlowTypecheck.swift`.
+- 통합 테스트:
+  - 워닝이 발생하는 sample 파일에서 finding 수가 양수.
+  - threshold가 매우 큰 값일 때 finding 0.
+  - 존재하지 않는 파일 → tool result `isError: true` (외부 프로세스 실패).
+
+#### Stage 1.C — `emit_ast`/`emit_sil`/`emit_ir`
+- `Toolchain/SwiftcInvocation.swift`: 도구별 인자 빌더의 공통 헬퍼(toolchain resolve + target 인자 구성 + optimization 인자 매핑).
+- `Tools/EmitAST.swift`, `Tools/EmitSIL.swift`, `Tools/EmitIR.swift`.
+- 통합 테스트: 각 도구가 임시 파일을 만들고 경로+크기 반환. 파일 내용 첫 줄로 형식 sanity check (예: SIL은 `sil_stage canonical` 같은 헤더, IR는 `; ModuleID =`).
+
+#### Stage 1.D — `build_isolated_snippet`
+- `Execution/IsolatedRun.swift`: 코드 저장 → 컴파일 → 자식 프로세스 launch + 캡처 + timeout (Process.terminate()) 단위.
+- `Tools/BuildIsolatedSnippet.swift`.
+- 통합 테스트:
+  - 정상 코드: stdout 캡처, exit 0.
+  - 컴파일 에러 코드: 빌드 단계 진단 반환, `isError: false` (분석 결과로 본다).
+  - 무한 루프(예: `while true {}`): timeout 후 `isError: true`, `timeout: true`.
+
+#### Stage 1.E — Cancellation 매핑 + 정리
+- `Server`가 `notifications/cancelled.requestId`를 in-flight handler 추적과 연결.
+- `IsolatedRun`이 cancel 신호를 받으면 자식 프로세스에 `SIGTERM`. cancel 도착이 응답 송신 직전이면 best-effort 무시.
+- 단위 테스트: `withTaskCancellation` 시나리오에서 자식 프로세스 종료 확인.
+
+### 3.3 검증 도구 (수동 stdio)
+
+각 Stage 1 도구가 도입된 직후 다음을 수동 stdio로 검증한다.
+
+```sh
+.build/debug/mcpswx <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"manual","version":"1.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_slow_typecheck","arguments":{"file":"/tmp/sample.swift","expression_threshold_ms":1,"function_threshold_ms":1}}}
+EOF
+```
+
+각 응답이 사양 envelope을 따르는지, content에 기대 정보가 들어가는지를 시야로 확인.
+
+### 3.4 Stage 1 안에서 미루는 사항
+
+- progress 노티피케이션 발송 (Stage 2에서 long-running 도구 첫 도입 시 함께).
+- AST `text` vs `json` 두 포맷 외의 변형(예: `-dump-scope-maps`).
+- 빌드 결과의 sandbox(예: 자식 프로세스 환경변수 제한). Stage 1은 부모 환경 그대로 inherit.
+- 산출물의 `resource_link` content type 노출. Stage 1은 `text`에 경로 문자열만.
 
 ## 4. Stage 1 종료 후 분기점
 
@@ -157,9 +191,7 @@ Stage 1을 끝낸 시점에 두 갈래 중 하나를 선택한다. 지금 시점
 - **갈래 A — 도구 폭 확장 (같은 단일 파일 입력 유지)**: `compile_stats`, `call_graph`, `concurrency_audit`, `api_surface`. 인프라 변경 거의 없음.
 - **갈래 B — 입력 폭 확장 (도구는 Stage 1의 4개 유지)**: 소스 디렉토리 → Swift 모듈 → SwiftPM 패키지 입력 단계 추가. 각 단계마다 컴파일러 인자 추출 경로 1개씩 추가.
 
-선택 기준:
-- Stage 1 종료 시점에 어느 도구가 사용자 시나리오에서 더 자주 호출되는지가 보이면 그 갈래 우선.
-- 두 갈래는 직교라 두 번째 갈래는 첫 번째 후 그대로 진행 가능.
+선택 기준은 Stage 1 종료 시점에 어느 도구가 사용자 시나리오에서 더 자주 호출되는지가 보일 때 그 갈래 우선. 두 갈래는 직교라 두 번째 갈래는 첫 번째 후 그대로 진행 가능.
 
 ## 5. Stage 2+ (윤곽만)
 
@@ -177,18 +209,15 @@ Stage 1을 끝낸 시점에 두 갈래 중 하나를 선택한다. 지금 시점
 - **AST/SIL 포맷 비안정성**: 외부에 산출물을 노출할 때 toolchain 버전을 함께 반환. 컴파일러 버전 간 포맷 호환을 약속하지 않는다.
 - **호출별 임시 디렉토리**: `$TMPDIR/swiftmcp-<uuid>/`. 호출 종료 시 정리.
 - **컴파일러 호출 vs 빌드**: 분석 호출(`-typecheck` 등)은 오브젝트 산출 없이 끝나도록 한다. 빌드 캐시 오염 방지.
-- **stdio 분리**: 자식 프로세스 stdout/stderr는 부모 stdio와 절대 섞이지 않는다 (FileHandle pipe 사용).
-- **응답 직렬화**: stdout 쓰기는 `actor`로 직렬화 — 한 번에 한 줄(JSON + `\n`) 단위로만 atomic.
+- **stdio 분리**: 자식 프로세스 stdout/stderr는 부모 stdio와 절대 섞이지 않는다 (Pipe 사용).
+- **응답 직렬화**: stdout 쓰기는 actor로 직렬화 — 한 번에 한 줄(JSON + `\n`) 단위로만 atomic.
 - **인자 검증**: `swiftc -frontend -emit-supported-arguments`로 받은 토큰 화이트리스트로 동적 검증. 사용자 입력 옵션은 화이트리스트 통과 후 호출.
 - **Hidden 옵션 노출 정책**: 본 MCP가 외부에 인자로 노출하는 화이트리스트는 `swiftc --help` 기준. `-help-hidden`/`-frontend -help-hidden`의 옵션은 도구 내부에서만 사용. 사용자가 임의 옵션을 패스하는 채널은 두지 않는다.
 
 ## 7. Open Questions
 
-다음은 현재 시점에 결정하지 않는 항목입니다. Stage 진입 시 또는 외부 사실 확인 후 결정합니다.
-
-- 임시 파일 retention TTL.
-- `build_isolated_snippet`이 Stage 1에서 무엇을 sandbox로 막을지의 구체 목록.
-- progress 노티피케이션 도입 시점 (Stage 1 long-running 도구 도입 시 검토).
+- `build_isolated_snippet`이 Stage 1에서 무엇을 sandbox로 막을지의 구체 목록 (Stage 1.D 진입 시 결정).
+- progress 노티피케이션 도입 시점 (Stage 2 long-running 도구 도입 시 검토).
 - CLI 진입점(`mcpswx-cli`)의 도입 시점 — Stage 1 종료 후 재검토.
 - Stage 6+ 의 "playground/실행 모델 추가"가 본 MCP에 흡수될지, 별도 서버로 분리될지 — Stage 5 종료 후 결정.
 
