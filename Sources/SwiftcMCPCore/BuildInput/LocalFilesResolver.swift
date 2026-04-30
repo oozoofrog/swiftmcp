@@ -45,6 +45,11 @@ public struct LocalFilesResolver: BuildArgsResolver {
                 frameworkSearchPaths: [],
                 extraSwiftcArgs: []
             )
+
+        case .swiftPMPackage:
+            throw MCPError.internalError(
+                "LocalFilesResolver received a swiftPMPackage input — route through SwiftPMPackageResolver."
+            )
         }
     }
 

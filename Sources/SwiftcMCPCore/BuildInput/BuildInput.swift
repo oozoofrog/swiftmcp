@@ -2,8 +2,9 @@ import Foundation
 
 /// Tagged union of supported analysis inputs. Each tool decodes a single `input` field
 /// from its arguments and dispatches through `BuildArgsResolver` to obtain a flat
-/// `ResolvedBuildArgs`. Stage 3.A implements `file` + `directory`; later sub-stages add
-/// `swiftPMPackage`, `xcodeProject`, `xcodeWorkspace`.
+/// `ResolvedBuildArgs`. Stage 3.A: `file` + `directory`. Stage 3.B: `directory` +
+/// `search_paths`. Stage 3.C: `swiftPMPackage`. Later sub-stages add `xcodeProject`,
+/// `xcodeWorkspace`.
 public enum BuildInput: Sendable, Equatable {
     case file(path: String, target: String? = nil)
     case directory(
@@ -12,10 +13,17 @@ public enum BuildInput: Sendable, Equatable {
         target: String? = nil,
         searchPaths: [String] = []
     )
+    case swiftPMPackage(
+        path: String,
+        targetName: String? = nil,
+        configuration: String? = nil,
+        target: String? = nil
+    )
 
     /// Decodes a `BuildInput` from a `JSONValue` representing an object whose keys
-    /// pick the case (`file` / `directory`). Throws `MCPError.invalidParams` when the
-    /// shape is wrong (missing key, multiple keys, empty path, …).
+    /// pick the case (`file` / `directory` / `package`). Throws
+    /// `MCPError.invalidParams` when the shape is wrong (missing key, multiple keys,
+    /// empty path, …).
     public static func decode(_ value: JSONValue?) throws -> BuildInput {
         guard case .object(let dict) = value else {
             throw MCPError.invalidParams("`input` must be an object")
@@ -61,7 +69,20 @@ public enum BuildInput: Sendable, Equatable {
                 searchPaths: searchPaths
             )
 
-        case "package", "project", "workspace":
+        case "package":
+            guard let path = dict["package"]?.asString, !path.isEmpty else {
+                throw MCPError.invalidParams("`input.package` must be a non-empty string")
+            }
+            let targetName = dict["target_name"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
+            let configuration = dict["configuration"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
+            return .swiftPMPackage(
+                path: path,
+                targetName: targetName,
+                configuration: configuration,
+                target: target
+            )
+
+        case "project", "workspace":
             throw MCPError.invalidParams(
                 "`input.\(present[0])` is not yet supported in this stage"
             )
@@ -76,16 +97,16 @@ public enum BuildInput: Sendable, Equatable {
         switch self {
         case .file(_, let target): return target
         case .directory(_, _, let target, _): return target
+        case .swiftPMPackage(_, _, _, let target): return target
         }
     }
 
-    /// JSON schema fragment for the `input` field. Reused across every file/directory-
-    /// accepting tool so the schema stays in one place. Stage 3.A advertises only the
-    /// `file` and `directory` cases; later sub-stages extend this.
+    /// JSON schema fragment for the `input` field. Reused across every input-accepting
+    /// tool so the schema stays in one place. Tracks the current set of supported cases.
     public static let jsonSchemaProperty: JSONValue = .object([
         "type": .string("object"),
         "description": .string(
-            "Discriminated input. Provide exactly one of: `file`, `directory`. Optional `target` triple applies to any case."
+            "Discriminated input. Provide exactly one of: `file`, `directory`, `package`. Optional `target` triple applies to any case."
         ),
         "properties": .object([
             "file": .object([
@@ -96,6 +117,10 @@ public enum BuildInput: Sendable, Equatable {
                 "type": .string("string"),
                 "description": .string("Path to a directory of Swift sources. All top-level *.swift files are passed to swiftc in one invocation.")
             ]),
+            "package": .object([
+                "type": .string("string"),
+                "description": .string("Path to a SwiftPM package directory (containing Package.swift). The resolver runs `swift package describe --type json` and selects either the named target or the first library target.")
+            ]),
             "module_name": .object([
                 "type": .string("string"),
                 "description": .string("Module name for the directory case. Defaults to the directory's basename.")
@@ -104,6 +129,14 @@ public enum BuildInput: Sendable, Equatable {
                 "type": .string("array"),
                 "items": .object(["type": .string("string")]),
                 "description": .string("Additional `-I` import search paths (used with the directory case).")
+            ]),
+            "target_name": .object([
+                "type": .string("string"),
+                "description": .string("SwiftPM target to analyze. Required when the package has multiple library targets; defaults to the first library target otherwise.")
+            ]),
+            "configuration": .object([
+                "type": .string("string"),
+                "description": .string("Build configuration for SwiftPM dependency pre-builds: `debug` (default) or `release`.")
             ]),
             "target": .object([
                 "type": .string("string"),
