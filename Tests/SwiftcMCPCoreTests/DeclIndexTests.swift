@@ -81,6 +81,21 @@ struct DeclIndexTests {
     }
 
     @Test
+    func indexesTypealiasNodeWithoutDeclSuffix() {
+        // swiftc emits `(typealias …)` for typealiases — note the missing `_decl`
+        // suffix that other top-level kinds carry. The index must recognize both
+        // forms so typealiases aren't silently skipped.
+        let typealiasAST = #"""
+        (source_file "/tmp/multi.swift"
+          (typealias decl_context=0x1 range=[/tmp/multi.swift:1:8 - line:1:24] trailing_semi "Foo" interface_type="Foo.Type" type="Int")
+          (typealias_decl decl_context=0x1 range=[/tmp/multi.swift:2:8 - line:2:24] "Bar" interface_type="Bar.Type" type="String"))
+        """#
+        let index = DeclIndex.build(astText: typealiasAST)
+        let names = Set(index.entries.filter { $0.kind == .typealiasDecl }.map(\.name))
+        #expect(names == ["Foo", "Bar"])
+    }
+
+    @Test
     func entryContainingLineFindsParent() throws {
         let index = DeclIndex.build(astText: sampleAST)
         // Line 5 is inside Counter (lines 3..8).

@@ -88,6 +88,33 @@ struct DependencyGraphTests {
     }
 
     @Test
+    func includesAllDeclsSharingAStartLine() throws {
+        // Two typealiases on a single physical line — swiftc emits separate AST
+        // entries with the same startLine but distinct startColumn. A startLine-keyed
+        // visited set would have dropped one of them silently. Keying on the full
+        // Entry preserves both.
+        let multiDeclAST = #"""
+        (source_file "/tmp/multi.swift"
+          (typealias decl_context=0x1 range=[/tmp/multi.swift:1:8 - line:1:24] "Foo" interface_type="Foo.Type" type="Int")
+          (typealias decl_context=0x1 range=[/tmp/multi.swift:1:36 - line:1:52] "Bar" interface_type="Bar.Type" type="String")
+          (func_decl decl_context=0x1 range=[/tmp/multi.swift:2:8 - line:2:44] "use()" interface_type="() -> (Foo, Bar)"
+            (declref_expr range=[/tmp/multi.swift:2:30 - line:2:30] decl="sample.(file).Foo@/tmp/multi.swift:1:8" function_ref=single)
+            (declref_expr range=[/tmp/multi.swift:2:35 - line:2:35] decl="sample.(file).Bar@/tmp/multi.swift:1:36" function_ref=single)))
+        """#
+        let index = DeclIndex.build(astText: multiDeclAST)
+        // Sanity: DeclIndex sees both typealiases.
+        let typealiasNames = Set(index.entries.filter { $0.kind == .typealiasDecl }.map(\.name))
+        #expect(typealiasNames == ["Foo", "Bar"])
+
+        let graph = DependencyGraph(index: index, astText: multiDeclAST)
+        let useEntry = try #require(index.find(signatureKey: "use()"))
+        let output = graph.transitiveClosure(startingAt: useEntry)
+        let names = Set(output.closure.map(\.name))
+        #expect(names.contains("Foo"))
+        #expect(names.contains("Bar"))
+    }
+
+    @Test
     func avoidsRevisitingDecls() throws {
         // Synthetic mutual-call AST: A → B and B → A. Closure must include each
         // exactly once, regardless of cycle direction.

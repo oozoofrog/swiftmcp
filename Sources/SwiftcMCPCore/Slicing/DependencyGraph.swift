@@ -24,16 +24,20 @@ public struct DependencyGraph: Sendable {
     /// overloaded names (multiple `index.find(name:)` results), all overloads are
     /// included — overloads are typically used together. Type bodies and their
     /// extensions also share a `signatureKey` (both report the type's name), so
-    /// uniqueness is keyed on `startLine` rather than `signatureKey`: each decl in a
-    /// single file occupies a distinct starting line, and that lets the BFS pull in
-    /// every extension of a referenced type alongside the body.
+    /// uniqueness is keyed on the full `Entry` value: name + signatureKey + kind +
+    /// source range. That handles three failure modes simultaneously:
+    /// 1. struct + extension on the same name (different startLine, same name).
+    /// 2. multiple decls on a single physical line — e.g.
+    ///    `typealias Foo = Int; typealias Bar = String` — which used to collide on
+    ///    a startLine-only key.
+    /// 3. ordinary overloads (different signatureKey, same name).
     public func transitiveClosure(startingAt start: DeclIndex.Entry) -> Output {
-        var visitedLines = Set<Int>()
+        var visited = Set<DeclIndex.Entry>()
         var visitedOrder: [DeclIndex.Entry] = []
         var external = Set<String>()
 
         var queue: [DeclIndex.Entry] = [start]
-        visitedLines.insert(start.startLine)
+        visited.insert(start)
 
         while !queue.isEmpty {
             let entry = queue.removeFirst()
@@ -53,7 +57,7 @@ public struct DependencyGraph: Sendable {
                     continue
                 }
                 for candidate in candidates {
-                    if visitedLines.insert(candidate.startLine).inserted {
+                    if visited.insert(candidate).inserted {
                         queue.append(candidate)
                     }
                 }

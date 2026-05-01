@@ -10,8 +10,8 @@ import Foundation
 /// stable heuristic; a sample-AST unit test guards regressions when the formatter
 /// changes.
 public struct DeclIndex: Sendable {
-    public struct Entry: Sendable, Equatable {
-        public enum Kind: String, Sendable, Codable, Equatable {
+    public struct Entry: Sendable, Hashable {
+        public enum Kind: String, Sendable, Codable, Hashable {
             case function
             case type            // struct / class / enum
             case protocolDecl    = "protocol"
@@ -72,7 +72,10 @@ public struct DeclIndex: Sendable {
     nonisolated(unsafe) private static let classLine = #/^  \(class_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
     nonisolated(unsafe) private static let enumLine = #/^  \(enum_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
     nonisolated(unsafe) private static let protocolLine = #/^  \(protocol[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
-    nonisolated(unsafe) private static let typealiasLine = #/^  \(typealias_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
+    // swiftc emits `(typealias …)` not `(typealias_decl …)` — the trailing `_decl`
+    // is missing for this one node kind. Match both for resilience across toolchain
+    // versions.
+    nonisolated(unsafe) private static let typealiasLine = #/^  \(typealias(?:_decl)?\b[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\][^"]*?"([^"]+)"/#
     nonisolated(unsafe) private static let extensionLine = #/^  \(extension_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\][^"]*?"([^"]+)"/#
     nonisolated(unsafe) private static let varLine = #/^  \(var_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
 
