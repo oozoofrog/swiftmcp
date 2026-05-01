@@ -31,7 +31,7 @@ public struct DefaultBuildArgsResolver: BuildArgsResolver {
             return try await localFiles.resolveArgs(for: input)
         case .swiftPMPackage:
             return try await swiftPM.resolveArgs(for: input)
-        case .xcodeProject:
+        case .xcodeProject, .xcodeWorkspace:
             return try await xcodebuild.resolveArgs(for: input)
         }
     }

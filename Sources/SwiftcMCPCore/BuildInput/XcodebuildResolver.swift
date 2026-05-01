@@ -24,12 +24,28 @@ public struct XcodebuildResolver: BuildArgsResolver {
     public init() {}
 
     public func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
-        guard case .xcodeProject(let path, let targetName, let configuration, let triple) = input else {
-            throw MCPError.internalError("XcodebuildResolver received non-project input")
+        let mode: Mode
+        let configuration: String?
+        let triple: String?
+        let identifier: String  // user-facing label for error messages
+        switch input {
+        case .xcodeProject(let path, let targetName, let cfg, let target):
+            let absolute = absolutize(path)
+            try ensureXcodeProject(absolute)
+            mode = .project(path: absolute, target: targetName)
+            configuration = cfg
+            triple = target
+            identifier = "target '\(targetName)'"
+        case .xcodeWorkspace(let path, let scheme, let cfg, let target):
+            let absolute = absolutize(path)
+            try ensureXcodeWorkspace(absolute)
+            mode = .workspace(path: absolute, scheme: scheme)
+            configuration = cfg
+            triple = target
+            identifier = "scheme '\(scheme)'"
+        default:
+            throw MCPError.internalError("XcodebuildResolver received non-Xcode input")
         }
-
-        let absoluteProject = absolutize(path)
-        try ensureXcodeProject(absoluteProject)
 
         let resolvedConfig = configuration ?? "Debug"
         let hostArch = currentArch()
@@ -46,15 +62,13 @@ public struct XcodebuildResolver: BuildArgsResolver {
         ]
 
         try await runXcodebuildBuild(
-            project: absoluteProject,
-            target: targetName,
+            mode: mode,
             configuration: resolvedConfig,
             overrides: overrides
         )
 
         let settings = try await readBuildSettings(
-            project: absoluteProject,
-            target: targetName,
+            mode: mode,
             configuration: resolvedConfig,
             overrides: overrides
         )
@@ -62,20 +76,25 @@ public struct XcodebuildResolver: BuildArgsResolver {
         let fileListKey = "SWIFT_RESPONSE_FILE_PATH_normal_\(hostArch)"
         guard let fileListPath = settings[fileListKey], !fileListPath.isEmpty else {
             throw MCPError.internalError(
-                "xcodebuild did not report `\(fileListKey)` for target '\(targetName)'"
+                "xcodebuild did not report `\(fileListKey)` for \(identifier)"
             )
         }
         let inputFiles = try readSwiftFileList(at: fileListPath)
         guard !inputFiles.isEmpty else {
             throw MCPError.internalError(
-                "SwiftFileList at \(fileListPath) is empty — target '\(targetName)' has no Swift sources?"
+                "SwiftFileList at \(fileListPath) is empty — \(identifier) has no Swift sources?"
             )
         }
 
+        let fallbackModuleName: String
+        switch mode {
+        case .project(_, let targetName): fallbackModuleName = targetName
+        case .workspace(_, let scheme): fallbackModuleName = scheme
+        }
         let moduleName = settings["PRODUCT_MODULE_NAME"]
             ?? settings["PRODUCT_NAME"]
             ?? settings["TARGET_NAME"]
-            ?? targetName
+            ?? fallbackModuleName
 
         var extraSwiftcArgs: [String] = []
         if let sdk = settings["SDKROOT"], !sdk.isEmpty {
@@ -95,20 +114,32 @@ public struct XcodebuildResolver: BuildArgsResolver {
         )
     }
 
+    /// Internal mode marker so the build/showBuildSettings invocations can vary just
+    /// the project/workspace argument pair while sharing everything else.
+    enum Mode {
+        case project(path: String, target: String)
+        case workspace(path: String, scheme: String)
+
+        var selectorArgs: [String] {
+            switch self {
+            case .project(let path, let target):
+                return ["-project", path, "-target", target]
+            case .workspace(let path, let scheme):
+                return ["-workspace", path, "-scheme", scheme]
+            }
+        }
+    }
+
     // MARK: - xcodebuild invocations
 
     private func runXcodebuildBuild(
-        project: String,
-        target: String,
+        mode: Mode,
         configuration: String,
         overrides: [String]
     ) async throws {
-        var arguments: [String] = [
-            "build",
-            "-project", project,
-            "-target", target,
-            "-configuration", configuration
-        ]
+        var arguments: [String] = ["build"]
+        arguments.append(contentsOf: mode.selectorArgs)
+        arguments.append(contentsOf: ["-configuration", configuration])
         arguments.append(contentsOf: overrides)
         // We only treat *launch* failures (xcodebuild itself can't be spawned, or the
         // path is wrong) as resolver errors. A non-zero exit from xcodebuild typically
@@ -124,17 +155,13 @@ public struct XcodebuildResolver: BuildArgsResolver {
     }
 
     private func readBuildSettings(
-        project: String,
-        target: String,
+        mode: Mode,
         configuration: String,
         overrides: [String]
     ) async throws -> [String: String] {
-        var arguments: [String] = [
-            "-project", project,
-            "-target", target,
-            "-configuration", configuration,
-            "-showBuildSettings"
-        ]
+        var arguments: [String] = []
+        arguments.append(contentsOf: mode.selectorArgs)
+        arguments.append(contentsOf: ["-configuration", configuration, "-showBuildSettings"])
         arguments.append(contentsOf: overrides)
         let result: ProcessResult
         do {
@@ -191,6 +218,20 @@ public struct XcodebuildResolver: BuildArgsResolver {
         let pbx = path + "/project.pbxproj"
         guard FileManager.default.fileExists(atPath: pbx) else {
             throw MCPError.invalidParams("`.xcodeproj` is missing project.pbxproj: \(pbx)")
+        }
+    }
+
+    private func ensureXcodeWorkspace(_ path: String) throws {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            throw MCPError.invalidParams("`input.workspace` does not exist or is not a directory: \(path)")
+        }
+        guard path.hasSuffix(".xcworkspace") else {
+            throw MCPError.invalidParams("`input.workspace` must end with `.xcworkspace`: \(path)")
+        }
+        let contents = path + "/contents.xcworkspacedata"
+        guard FileManager.default.fileExists(atPath: contents) else {
+            throw MCPError.invalidParams("`.xcworkspace` is missing contents.xcworkspacedata: \(contents)")
         }
     }
 

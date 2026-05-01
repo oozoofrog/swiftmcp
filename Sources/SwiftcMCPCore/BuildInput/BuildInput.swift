@@ -25,6 +25,12 @@ public enum BuildInput: Sendable, Equatable {
         configuration: String? = nil,
         target: String? = nil
     )
+    case xcodeWorkspace(
+        path: String,
+        scheme: String,
+        configuration: String? = nil,
+        target: String? = nil
+    )
 
     /// Decodes a `BuildInput` from a `JSONValue` representing an object whose keys
     /// pick the case (`file` / `directory` / `package`). Throws
@@ -104,8 +110,18 @@ public enum BuildInput: Sendable, Equatable {
             )
 
         case "workspace":
-            throw MCPError.invalidParams(
-                "`input.\(present[0])` is not yet supported in this stage"
+            guard let path = dict["workspace"]?.asString, !path.isEmpty else {
+                throw MCPError.invalidParams("`input.workspace` must be a non-empty string")
+            }
+            guard let scheme = dict["scheme"]?.asString, !scheme.isEmpty else {
+                throw MCPError.invalidParams("`input.scheme` is required for `input.workspace`")
+            }
+            let configuration = dict["configuration"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
+            return .xcodeWorkspace(
+                path: path,
+                scheme: scheme,
+                configuration: configuration,
+                target: target
             )
 
         default:
@@ -120,6 +136,7 @@ public enum BuildInput: Sendable, Equatable {
         case .directory(_, _, let target, _): return target
         case .swiftPMPackage(_, _, _, let target): return target
         case .xcodeProject(_, _, _, let target): return target
+        case .xcodeWorkspace(_, _, _, let target): return target
         }
     }
 
@@ -128,7 +145,7 @@ public enum BuildInput: Sendable, Equatable {
     public static let jsonSchemaProperty: JSONValue = .object([
         "type": .string("object"),
         "description": .string(
-            "Discriminated input. Provide exactly one of: `file`, `directory`, `package`, `project`. Optional `target` triple applies to any case."
+            "Discriminated input. Provide exactly one of: `file`, `directory`, `package`, `project`, `workspace`. Optional `target` triple applies to any case."
         ),
         "properties": .object([
             "file": .object([
@@ -146,6 +163,14 @@ public enum BuildInput: Sendable, Equatable {
             "project": .object([
                 "type": .string("string"),
                 "description": .string("Path to a `.xcodeproj` directory. Requires `target_name` to identify the target to analyze. The resolver runs `xcodebuild build` once into a scratch directory and reads the SwiftFileList that swiftc would consume.")
+            ]),
+            "workspace": .object([
+                "type": .string("string"),
+                "description": .string("Path to a `.xcworkspace` directory. Requires `scheme` to identify the build scheme to analyze. Same xcodebuild-based resolution as `project`, just driven through `-workspace`/`-scheme` instead of `-project`/`-target`.")
+            ]),
+            "scheme": .object([
+                "type": .string("string"),
+                "description": .string("Scheme name to use with `workspace` inputs. Auto-generated schemes from referenced projects are visible here.")
             ]),
             "module_name": .object([
                 "type": .string("string"),

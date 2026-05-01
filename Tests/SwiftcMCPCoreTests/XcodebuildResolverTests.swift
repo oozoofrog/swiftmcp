@@ -70,6 +70,143 @@ struct BuildInputXcodeProjectDecodingTests {
     }
 }
 
+@Suite("BuildInput xcodeWorkspace decoding")
+struct BuildInputXcodeWorkspaceDecodingTests {
+    @Test
+    func workspaceAndSchemeRequired() throws {
+        let value = JSONValue.object([
+            "workspace": .string("/abs/Some.xcworkspace"),
+            "scheme": .string("Sample")
+        ])
+        let input = try BuildInput.decode(value)
+        guard case .xcodeWorkspace(let path, let scheme, let configuration, let target) = input else {
+            Issue.record("expected .xcodeWorkspace"); return
+        }
+        #expect(path == "/abs/Some.xcworkspace")
+        #expect(scheme == "Sample")
+        #expect(configuration == nil)
+        #expect(target == nil)
+    }
+
+    @Test
+    func workspaceWithAllFieldsDecodes() throws {
+        let value = JSONValue.object([
+            "workspace": .string("/abs/X.xcworkspace"),
+            "scheme": .string("App"),
+            "configuration": .string("Release"),
+            "target": .string("arm64-apple-macos14")
+        ])
+        let input = try BuildInput.decode(value)
+        guard case .xcodeWorkspace(let path, let scheme, let configuration, let target) = input else {
+            Issue.record("expected .xcodeWorkspace"); return
+        }
+        #expect(path == "/abs/X.xcworkspace")
+        #expect(scheme == "App")
+        #expect(configuration == "Release")
+        #expect(target == "arm64-apple-macos14")
+    }
+
+    @Test
+    func workspaceMissingSchemeRejected() throws {
+        let value = JSONValue.object(["workspace": .string("/abs/Some.xcworkspace")])
+        #expect(throws: MCPError.self) {
+            try BuildInput.decode(value)
+        }
+    }
+
+    @Test
+    func workspaceEmptySchemeRejected() throws {
+        let value = JSONValue.object([
+            "workspace": .string("/abs/Some.xcworkspace"),
+            "scheme": .string("")
+        ])
+        #expect(throws: MCPError.self) {
+            try BuildInput.decode(value)
+        }
+    }
+
+    @Test
+    func workspaceAndProjectBothRejected() throws {
+        let value = JSONValue.object([
+            "workspace": .string("/abs/W.xcworkspace"),
+            "scheme": .string("App"),
+            "project": .string("/abs/P.xcodeproj"),
+            "target_name": .string("App")
+        ])
+        #expect(throws: MCPError.self) {
+            try BuildInput.decode(value)
+        }
+    }
+}
+
+@Suite("XcodebuildResolver workspace mode (integration)")
+struct XcodebuildResolverWorkspaceIntegrationTests {
+    @Test
+    func resolverProducesInputFilesForSampleWorkspace() async throws {
+        let resolver = XcodebuildResolver()
+        let resolved = try await resolver.resolveArgs(for: .xcodeWorkspace(
+            path: fixturePath("SampleWorkspace.xcworkspace"),
+            scheme: "Sample",
+            configuration: nil,
+            target: nil
+        ))
+
+        #expect(resolved.moduleName == "Sample")
+        #expect(resolved.inputFiles.count == 1)
+        let firstInput = try #require(resolved.inputFiles.first)
+        #expect(firstInput.hasSuffix("/Sample.swift"))
+        #expect(FileManager.default.fileExists(atPath: firstInput))
+
+        #expect(resolved.extraSwiftcArgs.contains("-sdk"))
+        #expect(resolved.extraSwiftcArgs.contains("-swift-version"))
+    }
+
+    @Test
+    func unknownSchemeSurfacesAsToolExecutionFailure() async throws {
+        let resolver = XcodebuildResolver()
+        await #expect(throws: MCPError.self) {
+            _ = try await resolver.resolveArgs(for: .xcodeWorkspace(
+                path: fixturePath("SampleWorkspace.xcworkspace"),
+                scheme: "DoesNotExist",
+                configuration: nil,
+                target: nil
+            ))
+        }
+    }
+
+    @Test
+    func nonXcworkspaceDirectoryRejected() async throws {
+        let resolver = XcodebuildResolver()
+        // SampleProject.xcodeproj is a `.xcodeproj`, not a workspace.
+        await #expect(throws: MCPError.self) {
+            _ = try await resolver.resolveArgs(for: .xcodeWorkspace(
+                path: fixturePath("SampleProject.xcodeproj"),
+                scheme: "Sample",
+                configuration: nil,
+                target: nil
+            ))
+        }
+    }
+
+    @Test
+    func compileStatsEndToEndOnXcodeWorkspace() async throws {
+        let tool = CompileStatsTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "input": .object([
+                "workspace": .string(fixturePath("SampleWorkspace.xcworkspace")),
+                "scheme": .string("Sample")
+            ])
+        ]))
+
+        #expect(response.isError == false)
+        let result = try decodeResult(CompileStatsTool.Result.self, response)
+        #expect(result.compilerExitCode == 0)
+        #expect(result.totalCounters > 0)
+        let stderr = result.compilerStderr ?? ""
+        #expect(stderr.contains("error:") == false)
+    }
+}
+
 @Suite("XcodebuildResolver unit")
 struct XcodebuildResolverUnitTests {
     @Test

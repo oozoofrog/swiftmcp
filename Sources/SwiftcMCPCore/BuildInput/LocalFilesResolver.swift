@@ -55,6 +55,11 @@ public struct LocalFilesResolver: BuildArgsResolver {
             throw MCPError.internalError(
                 "LocalFilesResolver received an xcodeProject input — route through XcodebuildResolver."
             )
+
+        case .xcodeWorkspace:
+            throw MCPError.internalError(
+                "LocalFilesResolver received an xcodeWorkspace input — route through XcodebuildResolver."
+            )
         }
     }
 
