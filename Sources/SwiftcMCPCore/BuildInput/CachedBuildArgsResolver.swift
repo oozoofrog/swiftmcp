@@ -191,12 +191,71 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
             // nil to skip it).
             return [path, path + "/project.pbxproj"]
         case .xcodeWorkspace(let path, _, _, _, _):
-            // Same reasoning as xcodeProject. Workspace contents file describes
-            // which projects are referenced; the referenced projects' pbxprojs
-            // describe what's compiled. Tracking all referenced pbxprojs is a
-            // future enhancement — for now contents.xcworkspacedata's mtime
-            // catches workspace-level changes (project added/removed).
-            return [path, path + "/contents.xcworkspacedata"]
+            // contents.xcworkspacedata describes which projects the workspace
+            // references; each referenced .xcodeproj's project.pbxproj is what
+            // actually decides what xcodebuild compiles. Tracking only the
+            // workspace XML misses the case where a user opens Xcode and adds a
+            // file to one of the referenced projects — pbxproj is updated, but
+            // contents.xcworkspacedata isn't touched. Parse the XML to locate
+            // every referenced .xcodeproj and fingerprint each project.pbxproj.
+            var paths = [path, path + "/contents.xcworkspacedata"]
+            if let xml = try? String(
+                contentsOfFile: path + "/contents.xcworkspacedata",
+                encoding: .utf8
+            ) {
+                for projectPath in referencedProjectPaths(workspaceXML: xml, workspaceDir: path) {
+                    paths.append(projectPath)
+                    paths.append(projectPath + "/project.pbxproj")
+                }
+            }
+            return paths
+        }
+    }
+
+    /// Parse a workspace's `contents.xcworkspacedata` XML for every `<FileRef
+    /// location="…"/>` that points at an `.xcodeproj`. Resolves the location
+    /// prefix against the workspace's directory (`group:` → workspace's parent
+    /// dir, `container:` → workspace itself, `absolute:` → as-is). Returns
+    /// absolute paths.
+    nonisolated(unsafe) private static let fileRefLocationPattern = #/<FileRef\b[^>]*?\blocation\s*=\s*"([^"]+)"/#
+
+    private func referencedProjectPaths(
+        workspaceXML xml: String,
+        workspaceDir: String
+    ) -> [String] {
+        var projects: [String] = []
+        for match in xml.matches(of: Self.fileRefLocationPattern) {
+            let location = String(match.output.1)
+            guard let resolved = resolveWorkspaceLocation(location, workspaceDir: workspaceDir),
+                  resolved.hasSuffix(".xcodeproj")
+            else { continue }
+            projects.append(resolved)
+        }
+        return projects
+    }
+
+    private func resolveWorkspaceLocation(_ location: String, workspaceDir: String) -> String? {
+        // Apple's workspace format encodes `prefix:relative-path`. Common prefixes:
+        //   group:    — relative to the workspace's *containing* directory.
+        //   container: — relative to the workspace bundle itself.
+        //   absolute: — absolute path.
+        //   self:     — the workspace bundle itself (rare).
+        let parts = location.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        let prefix = String(parts[0])
+        let relative = String(parts[1])
+        switch prefix {
+        case "group":
+            let parent = (workspaceDir as NSString).deletingLastPathComponent
+            return (parent as NSString).appendingPathComponent(relative)
+        case "container":
+            return (workspaceDir as NSString).appendingPathComponent(relative)
+        case "absolute":
+            return relative
+        case "self":
+            return workspaceDir
+        default:
+            return nil
         }
     }
 

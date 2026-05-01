@@ -435,6 +435,79 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review (fifth pass): a workspace's
+    /// `contents.xcworkspacedata` only lists the projects it references — the
+    /// referenced `.xcodeproj`s' own `project.pbxproj` files describe what
+    /// xcodebuild actually compiles. A user opening Xcode and adding a file
+    /// updates pbxproj but leaves contents.xcworkspacedata untouched. The
+    /// fingerprint must therefore parse the workspace XML, locate each
+    /// referenced project, and track its pbxproj mtime.
+    @Test
+    func invalidatesWhenReferencedProjectPbxprojChanges() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+
+        // Build a workspace that references a sibling .xcodeproj. Layout mirrors
+        // the production fixture (Tests/Fixtures/SampleWorkspace.xcworkspace ->
+        // SampleProject.xcodeproj) so the parsing path runs against realistic
+        // group:-prefixed locations.
+        let projectDir = scratch.directory.appending(path: "Demo.xcodeproj", directoryHint: .isDirectory)
+        try fm.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let pbxproj = projectDir.appending(path: "project.pbxproj")
+        try "// initial pbxproj\n".write(to: pbxproj, atomically: true, encoding: .utf8)
+
+        let workspaceDir = scratch.directory.appending(path: "Demo.xcworkspace", directoryHint: .isDirectory)
+        try fm.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
+        let workspaceContents = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Workspace
+           version = "1.0">
+           <FileRef
+              location = "group:Demo.xcodeproj">
+           </FileRef>
+        </Workspace>
+        """
+        try workspaceContents.write(
+            to: workspaceDir.appending(path: "contents.xcworkspacedata"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        // Use a stub resolver — the fingerprint logic is what's under test, not
+        // the actual XcodebuildResolver. Fake input file lives anywhere; the
+        // workspace fingerprint must invalidate via the referenced pbxproj path.
+        let dummyInput = scratch.directory.appending(path: "fake.swift")
+        try "let x = 1\n".write(to: dummyInput, atomically: true, encoding: .utf8)
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [dummyInput.path],
+            moduleName: "Demo"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.xcodeWorkspace(
+            path: workspaceDir.path,
+            scheme: "Demo",
+            targetName: nil,
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Edit the referenced pbxproj. contents.xcworkspacedata is untouched —
+        // the only signal is the pbxproj mtime, which the fingerprint must
+        // include via the workspace XML parse.
+        try "// updated pbxproj\n".write(to: pbxproj, atomically: true, encoding: .utf8)
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: pbxproj.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
