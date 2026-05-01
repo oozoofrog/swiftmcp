@@ -134,15 +134,26 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
     }
 
     /// The path the caller treats as the "root" of this input. Ancestor walking
-    /// stops here so we don't fingerprint `/`, `/Users`, etc. `nil` for the
-    /// `.file` case where there isn't a meaningful directory root.
+    /// stops here so we don't fingerprint `/`, `/Users`, etc.
+    ///
+    /// `nil` for cases where ancestor walking either doesn't apply or would
+    /// over-include shared paths:
+    /// - `.file`: a single file's analysis doesn't depend on its sibling layout.
+    /// - `.xcodeProject` / `.xcodeWorkspace`: pbxproj / contents.xcworkspacedata
+    ///   are the authoritative descriptors of what xcodebuild compiles. New
+    ///   `.swift` files only enter the analysis once they're listed there, so
+    ///   tracking those manifest mtimes is sufficient. Also, the input root is
+    ///   `.xcodeproj` / `.xcworkspace` itself — but the source files live in
+    ///   *sibling* directories under the parent, so an ancestor walk from the
+    ///   inputFile would never meet the root and would climb into shared
+    ///   filesystem ancestors instead.
     private func rootPath(for input: BuildInput) -> String? {
         switch input {
         case .file: return nil
         case .directory(let path, _, _, _): return path
         case .swiftPMPackage(let path, _, _, _): return path
-        case .xcodeProject(let path, _, _, _): return path
-        case .xcodeWorkspace(let path, _, _, _, _): return path
+        case .xcodeProject: return nil
+        case .xcodeWorkspace: return nil
         }
     }
 
@@ -158,17 +169,65 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
             // module (mtime change on the modules dir) invalidates the slot.
             return [path] + searchPaths
         case .swiftPMPackage(let path, _, _, _):
-            return [
+            // SwiftPM recursively discovers `.swift` files under `Sources/<TargetName>`,
+            // so a new file dropped into *any* existing nested directory must
+            // invalidate the cache. Walking the entire `Sources/` tree picks up every
+            // intermediate directory's mtime — a directory's mtime bumps when an
+            // immediate child entry is added or removed, so deep additions are
+            // caught at the directory they appear in.
+            var paths = [
                 path,
                 path + "/Package.swift",
                 path + "/Package.resolved",
                 path + "/Sources"
             ]
+            paths.append(contentsOf: enumerateSubdirectories(at: path + "/Sources"))
+            return paths
         case .xcodeProject(let path, _, _, _):
+            // pbxproj is the sole authority on which files Xcode will compile —
+            // a new `.swift` file is invisible to xcodebuild until it's added to
+            // the build phases. So pbxproj's mtime fully covers "the file set
+            // changed". No ancestor walking needed (and `rootPath(for:)` returns
+            // nil to skip it).
             return [path, path + "/project.pbxproj"]
         case .xcodeWorkspace(let path, _, _, _, _):
+            // Same reasoning as xcodeProject. Workspace contents file describes
+            // which projects are referenced; the referenced projects' pbxprojs
+            // describe what's compiled. Tracking all referenced pbxprojs is a
+            // future enhancement — for now contents.xcworkspacedata's mtime
+            // catches workspace-level changes (project added/removed).
             return [path, path + "/contents.xcworkspacedata"]
         }
+    }
+
+    /// Walk the directory tree rooted at `root` and return every subdirectory
+    /// (including `root` itself if it exists). Files are skipped — they're
+    /// already covered by `inputFiles` plus the parent-mtime mechanism. If
+    /// `root` doesn't exist or isn't readable, returns an empty list and the
+    /// caller's separate `paths.append(path + "/Sources")` provides the missing
+    /// signal via `mtimeOrSentinel`.
+    private func enumerateSubdirectories(at root: String) -> [String] {
+        var directories: [String] = []
+        let fm = FileManager.default
+        var rootIsDir: ObjCBool = false
+        guard fm.fileExists(atPath: root, isDirectory: &rootIsDir), rootIsDir.boolValue else {
+            return directories
+        }
+        let rootURL = URL(fileURLWithPath: root)
+        guard let enumerator = fm.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        ) else {
+            return directories
+        }
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true {
+                directories.append(url.path)
+            }
+        }
+        return directories
     }
 
     /// `nil` when the path doesn't exist; otherwise the mtime in epoch seconds.

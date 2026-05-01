@@ -373,6 +373,68 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review (fourth pass): `Sources/<TargetName>/Y/` is a
+    /// pre-existing nested directory that already had a file in it; the
+    /// resolver's stored inputFiles list points at that existing file. When the
+    /// user adds a *new* file inside the same nested directory
+    /// (`Y/Later.swift`), only `Y`'s mtime bumps — the parent `<TargetName>`
+    /// doesn't change because no immediate child entry was added or removed.
+    /// Walking ancestors of the existing inputFile catches `Y`, but only if we
+    /// also enumerate every directory under `Sources/`. That's what
+    /// `enumerateSubdirectories` does in the swiftPMPackage case.
+    @Test
+    func invalidatesWhenNestedExistingDirGainsFile() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let pkgDir = scratch.directory.appending(path: "Pkg", directoryHint: .isDirectory)
+        let nestedDir = pkgDir
+            .appending(path: "Sources", directoryHint: .isDirectory)
+            .appending(path: "App", directoryHint: .isDirectory)
+            .appending(path: "Y", directoryHint: .isDirectory)
+        try fm.createDirectory(at: nestedDir, withIntermediateDirectories: true)
+        try "// initial\n".write(
+            to: pkgDir.appending(path: "Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let original = nestedDir.appending(path: "Existing.swift")
+        try "public let y = 1\n".write(to: original, atomically: true, encoding: .utf8)
+
+        // Stub returns the original file; we don't touch resolver internals,
+        // we exercise fingerprint behavior.
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [original.path],
+            moduleName: "App"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.swiftPMPackage(
+            path: pkgDir.path,
+            targetName: "App",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Drop a new file into the *existing* nested directory. Y's mtime moves;
+        // App's does not, so this scenario can only be caught by enumerating
+        // every directory under Sources/. ancestor-walk alone isn't enough.
+        try "public let later = 1\n".write(
+            to: nestedDir.appending(path: "Later.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: nestedDir.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
