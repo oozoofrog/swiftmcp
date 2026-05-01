@@ -19,6 +19,12 @@ public enum BuildInput: Sendable, Equatable {
         configuration: String? = nil,
         target: String? = nil
     )
+    case xcodeProject(
+        path: String,
+        targetName: String,
+        configuration: String? = nil,
+        target: String? = nil
+    )
 
     /// Decodes a `BuildInput` from a `JSONValue` representing an object whose keys
     /// pick the case (`file` / `directory` / `package`). Throws
@@ -82,7 +88,22 @@ public enum BuildInput: Sendable, Equatable {
                 target: target
             )
 
-        case "project", "workspace":
+        case "project":
+            guard let path = dict["project"]?.asString, !path.isEmpty else {
+                throw MCPError.invalidParams("`input.project` must be a non-empty string")
+            }
+            guard let targetName = dict["target_name"]?.asString, !targetName.isEmpty else {
+                throw MCPError.invalidParams("`input.target_name` is required for `input.project`")
+            }
+            let configuration = dict["configuration"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
+            return .xcodeProject(
+                path: path,
+                targetName: targetName,
+                configuration: configuration,
+                target: target
+            )
+
+        case "workspace":
             throw MCPError.invalidParams(
                 "`input.\(present[0])` is not yet supported in this stage"
             )
@@ -98,6 +119,7 @@ public enum BuildInput: Sendable, Equatable {
         case .file(_, let target): return target
         case .directory(_, _, let target, _): return target
         case .swiftPMPackage(_, _, _, let target): return target
+        case .xcodeProject(_, _, _, let target): return target
         }
     }
 
@@ -106,7 +128,7 @@ public enum BuildInput: Sendable, Equatable {
     public static let jsonSchemaProperty: JSONValue = .object([
         "type": .string("object"),
         "description": .string(
-            "Discriminated input. Provide exactly one of: `file`, `directory`, `package`. Optional `target` triple applies to any case."
+            "Discriminated input. Provide exactly one of: `file`, `directory`, `package`, `project`. Optional `target` triple applies to any case."
         ),
         "properties": .object([
             "file": .object([
@@ -120,6 +142,10 @@ public enum BuildInput: Sendable, Equatable {
             "package": .object([
                 "type": .string("string"),
                 "description": .string("Path to a SwiftPM package directory (containing Package.swift). The resolver runs `swift package describe --type json` and selects either the named target or the first library target.")
+            ]),
+            "project": .object([
+                "type": .string("string"),
+                "description": .string("Path to a `.xcodeproj` directory. Requires `target_name` to identify the target to analyze. The resolver runs `xcodebuild build` once into a scratch directory and reads the SwiftFileList that swiftc would consume.")
             ]),
             "module_name": .object([
                 "type": .string("string"),
