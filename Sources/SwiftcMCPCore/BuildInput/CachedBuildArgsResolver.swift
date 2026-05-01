@@ -94,16 +94,31 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         paths.formUnion(resolved.inputFiles)
         paths.formUnion(resolved.searchPaths)
         paths.formUnion(resolved.frameworkSearchPaths)
-        // Parent directories of every input file. macOS/Linux bump a directory's
-        // mtime when entries are added or removed inside it, so tracking parents
-        // catches "new sibling source file appeared" scenarios that the file-list
-        // alone misses. Critical for SwiftPM packages: a new file dropped into
-        // `Sources/<TargetName>/` bumps that target directory's mtime, even
-        // though `Package.swift` and the package root itself are untouched.
-        for file in resolved.inputFiles {
-            let parent = (file as NSString).deletingLastPathComponent
-            if !parent.isEmpty {
-                paths.insert(parent)
+        // Every ancestor directory of every input file, walked up to the input's
+        // declared root (Package path / Project path / etc.). macOS/Linux bump a
+        // directory's mtime when entries are added or removed inside it. Tracking
+        // *only* the immediate parent isn't enough for nested layouts: if all
+        // current input files live at `Sources/Lib/Sub/*.swift`, a new file added
+        // at `Sources/Lib/RootLevel.swift` bumps `Sources/Lib`'s mtime — but the
+        // immediate-parent set only contains `Sources/Lib/Sub`. Walking ancestors
+        // up to the input root catches that.
+        //
+        // `.file` inputs have no meaningful root — adding sibling files in the
+        // host filesystem doesn't affect the analysis. Skip ancestor tracking
+        // there so we don't fingerprint shared ancestors like `/var/folders/.../T`,
+        // whose mtime moves whenever any other test or process writes nearby.
+        if let inputRoot = rootPath(for: input) {
+            for file in resolved.inputFiles {
+                var current = (file as NSString).deletingLastPathComponent
+                while !current.isEmpty {
+                    paths.insert(current)
+                    if current == inputRoot { break }
+                    let parent = (current as NSString).deletingLastPathComponent
+                    // Bail if `deletingLastPathComponent` is a fixed point (we've hit
+                    // "/" or "."). Without this the loop would spin forever on root.
+                    if parent == current { break }
+                    current = parent
+                }
             }
         }
         // Manifest-style paths: case-specific, drive cache invalidation when the
@@ -116,6 +131,19 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
             fingerprint[path] = mtimeOrSentinel(at: path)
         }
         return fingerprint
+    }
+
+    /// The path the caller treats as the "root" of this input. Ancestor walking
+    /// stops here so we don't fingerprint `/`, `/Users`, etc. `nil` for the
+    /// `.file` case where there isn't a meaningful directory root.
+    private func rootPath(for input: BuildInput) -> String? {
+        switch input {
+        case .file: return nil
+        case .directory(let path, _, _, _): return path
+        case .swiftPMPackage(let path, _, _, _): return path
+        case .xcodeProject(let path, _, _, _): return path
+        case .xcodeWorkspace(let path, _, _, _, _): return path
+        }
     }
 
     /// Per-case paths whose mtime represents the *shape* of the input — the things

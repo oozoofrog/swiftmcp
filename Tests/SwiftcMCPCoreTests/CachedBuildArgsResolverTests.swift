@@ -313,6 +313,66 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review (third pass): when a target's input files all
+    /// live in a *nested* directory like `Sources/Lib/Sub/`, adding a new file at
+    /// the target's top level (`Sources/Lib/NewFile.swift`) bumps `Sources/Lib`'s
+    /// mtime — but the immediate-parent set only contains `Sources/Lib/Sub`. The
+    /// fingerprint must walk *every* ancestor up to the input root, not just the
+    /// immediate parent.
+    @Test
+    func invalidatesWhenSwiftPMNestedTargetGainsTopLevelFile() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let pkgDir = scratch.directory.appending(path: "Pkg", directoryHint: .isDirectory)
+        let targetDir = pkgDir
+            .appending(path: "Sources", directoryHint: .isDirectory)
+            .appending(path: "Lib", directoryHint: .isDirectory)
+        let nestedDir = targetDir.appending(path: "Sub", directoryHint: .isDirectory)
+        try fm.createDirectory(at: nestedDir, withIntermediateDirectories: true)
+        try "// initial\n".write(
+            to: pkgDir.appending(path: "Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        // Original sources only in the nested Sub/ folder. Immediate-parent
+        // tracking would only cover `Sources/Lib/Sub`.
+        let nestedSource = nestedDir.appending(path: "Inner.swift")
+        try "public let inner = 1\n".write(to: nestedSource, atomically: true, encoding: .utf8)
+
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [nestedSource.path],
+            moduleName: "Lib"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.swiftPMPackage(
+            path: pkgDir.path,
+            targetName: "Lib",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Add a file at the *target* level (Sources/Lib/RootLevel.swift), not in
+        // the existing nested Sub/. Sources/Lib's mtime bumps; Sources/Lib/Sub
+        // does not. A fingerprint that only looked at the immediate parent of
+        // `Inner.swift` would silently miss this — the ancestor walk catches it.
+        try "public let top = 2\n".write(
+            to: targetDir.appending(path: "RootLevel.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: targetDir.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
