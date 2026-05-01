@@ -132,8 +132,14 @@ public struct SliceFunctionTool: MCPTool {
                 pieces.append(importBlock)
             }
         }
-        for entry in graphOutput.closure {
-            if let text = mapper.substringForLines(startLine: entry.startLine, endLine: entry.endLine) {
+        // Two decls can share a physical line (e.g. `typealias Foo = Int; typealias
+        // Bar = String`) or overlap (a top-level `let` and a multi-line `func` whose
+        // first line carries both). Naively substringing each entry would emit the
+        // shared line twice. Merge the closure's source ranges first so each line is
+        // rendered exactly once.
+        let mergedRanges = Self.mergeOverlappingRanges(graphOutput.closure)
+        for range in mergedRanges {
+            if let text = mapper.substringForLines(startLine: range.lowerBound, endLine: range.upperBound) {
                 pieces.append(text)
             }
         }
@@ -195,6 +201,31 @@ public struct SliceFunctionTool: MCPTool {
             let keys = candidates.map(\.signatureKey).joined(separator: ", ")
             throw MCPError.invalidParams("Function '\(functionName)' is overloaded (\(keys)). Provide the exact `signatureKey` (e.g. `\(candidates[0].signatureKey)`) instead of the base name.")
         }
+    }
+
+    /// Merge overlapping `[startLine, endLine]` intervals from the BFS closure into
+    /// disjoint ranges, in source order. Strictly-overlapping ranges are unioned;
+    /// adjacent-but-disjoint ones (e.g. `func a` ends on line 3, `func b` starts on
+    /// line 5) stay separate so the rendered slice keeps a blank line between them
+    /// when the original source had one.
+    static func mergeOverlappingRanges(_ entries: [DeclIndex.Entry]) -> [ClosedRange<Int>] {
+        var ranges: [ClosedRange<Int>] = entries.map { $0.startLine...$0.endLine }
+        ranges.sort { lhs, rhs in
+            if lhs.lowerBound == rhs.lowerBound {
+                return lhs.upperBound < rhs.upperBound
+            }
+            return lhs.lowerBound < rhs.lowerBound
+        }
+        var merged: [ClosedRange<Int>] = []
+        for range in ranges {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                let unioned = last.lowerBound...max(last.upperBound, range.upperBound)
+                merged[merged.count - 1] = unioned
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
     }
 
     private func importLines(from source: String) -> String {

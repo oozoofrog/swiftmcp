@@ -504,6 +504,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **`signatureKey` 충돌: type body vs extension** (Codex stop-time review 지적): `struct Counter`와 `extension Counter`는 둘 다 `name="Counter"` + `signatureKey="Counter"`로 색인됨. BFS의 visited set이 signatureKey 기반이면 둘 중 하나만 들어가고 나머지가 누락 → extension 메서드를 호출하는 슬라이스가 self-typecheck 실패.
 - **`startLine` 충돌: 같은 라인 multi-decl** (Codex stop-time review 두 번째 지적): `typealias Foo = Int; typealias Bar = String` 같은 single-line multi-decl은 두 entry 모두 `startLine == 1`. visited 키가 startLine만이면 또 silent drop. 수정: visited 키를 *Entry 자체*(name + signatureKey + kind + 전체 source range를 모두 포함하는 Hashable)로 변경. 세 가지 충돌(struct+extension, single-line multi-decl, ordinary overload)을 모두 한 번에 해소.
 - **`typealias` 노드는 `_decl` 서픽스 없음**: 다른 top-level decl은 `(struct_decl …)`/`(func_decl …)`처럼 `_decl` 서픽스를 가지지만 typealias만 `(typealias …)`로 emit됨. DeclIndex 정규식이 `typealias_decl`만 매치하면 typealias가 색인 안 되어 의존 추적이 실패. `(?:_decl)?` 옵셔널로 양 형식 모두 매치.
+- **closure → 텍스트 렌더링 시 라인 중복** (Codex stop-time review 세 번째 지적): closure에 같은 라인 두 decl이 있거나 line range가 겹치면 `mapper.substringForLines`를 각각 호출해 동일 텍스트가 두 번 emit됨 → swiftc가 "duplicate definition" 에러. 수정: 렌더링 전에 closure decl들의 `[startLine, endLine]` interval을 union-merge해 disjoint 범위로 축약. 인접하지만 겹치지 않는 범위(`a`가 line 3 끝, `b`가 line 5 시작)는 분리 유지해 `\n\n` join이 원본 빈 줄 모양을 보존.
 
 ### Stage 4 후속 후보 (윤곽만)
 

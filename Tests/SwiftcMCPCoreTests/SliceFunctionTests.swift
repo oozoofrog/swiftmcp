@@ -2,6 +2,67 @@ import Foundation
 import Testing
 @testable import SwiftcMCPCore
 
+@Suite("SliceFunction.mergeOverlappingRanges")
+struct SliceFunctionMergeRangesTests {
+    private func entry(_ start: Int, _ end: Int, name: String = "x") -> DeclIndex.Entry {
+        DeclIndex.Entry(
+            name: name,
+            signatureKey: name,
+            kind: .function,
+            startLine: start,
+            startColumn: 1,
+            endLine: end,
+            endColumn: 1
+        )
+    }
+
+    @Test
+    func mergesIdenticalRanges() {
+        let ranges = SliceFunctionTool.mergeOverlappingRanges([
+            entry(1, 1, name: "a"),
+            entry(1, 1, name: "b")
+        ])
+        #expect(ranges == [1...1])
+    }
+
+    @Test
+    func unionsOverlappingRanges() {
+        // (1, 1) inside (1, 3) — single decl on line 1 + multi-line decl starting on
+        // line 1. Result is (1, 3), not (1, 1) + (1, 3) duplicating line 1.
+        let ranges = SliceFunctionTool.mergeOverlappingRanges([
+            entry(1, 1, name: "a"),
+            entry(1, 3, name: "b")
+        ])
+        #expect(ranges == [1...3])
+    }
+
+    @Test
+    func keepsDisjointRangesSeparate() {
+        // Adjacent but non-overlapping (3 ends, 5 begins) — keep separate so the
+        // join("\n\n") preserves the gap when the original source had a blank line.
+        let ranges = SliceFunctionTool.mergeOverlappingRanges([
+            entry(1, 3, name: "a"),
+            entry(5, 7, name: "b")
+        ])
+        #expect(ranges == [1...3, 5...7])
+    }
+
+    @Test
+    func handlesUnsortedInput() {
+        let ranges = SliceFunctionTool.mergeOverlappingRanges([
+            entry(10, 12, name: "c"),
+            entry(1, 3, name: "a"),
+            entry(2, 5, name: "b")
+        ])
+        #expect(ranges == [1...5, 10...12])
+    }
+
+    @Test
+    func emptyInputReturnsEmpty() {
+        #expect(SliceFunctionTool.mergeOverlappingRanges([]).isEmpty)
+    }
+}
+
 @Suite("SliceFunction (integration)")
 struct SliceFunctionTests {
     private func libraryPath() -> String {
@@ -89,6 +150,37 @@ struct SliceFunctionTests {
         #expect(signatureKeys.contains("helper(_:)"))
         // `helper()` is unrelated to `helper(_:)`, so it must NOT be pulled in.
         #expect(signatureKeys.contains("helper()") == false)
+    }
+
+    /// Per Codex stop-time review: two top-level decls on the same physical line
+    /// must not cause the slicer to emit that line twice. The fixture has
+    /// `typealias Foo = Int; typealias Bar = String` on a single line, and `use()`
+    /// references both. The merge step in SliceFunctionTool collapses both
+    /// startLine=1 entries into a single rendered range.
+    @Test
+    func sameLineMultiDeclsRenderAsSingleLine() async throws {
+        let tool = SliceFunctionTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(fixturePath("SliceTargets/MultiDeclLine.swift"))]),
+            "function_name": .string("use")
+        ]))
+        let result = try decodeResult(SliceFunctionTool.Result.self, response)
+
+        // Both typealiases must be in includedSymbols — the BFS still tracks them
+        // separately because Entry-keyed deduping kept them distinct.
+        let names = Set(result.includedSymbols.filter { $0.kind == .typealiasDecl }.map(\.name))
+        #expect(names == ["Foo", "Bar"])
+
+        // The typealias line, however, must appear exactly once in the rendered
+        // slice — that's the contract the merge step protects.
+        let occurrences = result.slicedCode.components(
+            separatedBy: "public typealias Foo = Int; public typealias Bar = String"
+        ).count - 1
+        #expect(occurrences == 1)
+
+        // And the slice still type-checks (no spurious duplicate definition errors).
+        #expect(result.verification.compilerExitCode == 0)
+        #expect(result.verification.unresolvedReferences.isEmpty)
     }
 
     /// Per Codex stop-time review: a struct and its extension share a
