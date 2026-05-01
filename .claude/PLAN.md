@@ -479,13 +479,34 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **AST 텍스트 정규식의 안정성**: 핵심 노드(parameter/pattern_named/func_decl/struct_decl/class_decl/enum_decl/protocol_decl/typealias_decl/import_decl)는 Swift 6.x 내내 안정적. toolchain 업그레이드 시 sample AST 텍스트로 회귀 모니터링.
 - **falsePositive 처리는 두 진입점 모두에서 일관되게**: `suggest_stubs`가 외부에서 받은 `missing_symbols`와 자체 도출한 리스트 두 경로 모두 falsePositive를 *skipped*로 분류해야 한다 (Codex stop-time review 지적). 외부 리스트만 그대로 통과시키면, 사용자가 `report_missing_symbols` 출력을 그대로 넘겼을 때 false-positive 마킹이 무시되어 잘못된 stub이 만들어진다. `StubBuilder.buildStubs`가 falsePositive 분기를 가장 먼저 처리.
 
-후속 마일스톤(Stage 4-2): `slice_function` — 큰 파일에서 함수 1개 + 의존 정의만 추출하는 슬라이싱. 도입 시점은 별도 plan으로 결정.
+### Stage 4-2 (완료) — 격리 실행 고도화: `slice_function`
+
+213 tests / 41 suites 통과. 단일 Swift 파일에서 함수 1개와 transitively 의존하는 top-level 정의만 추출해 self-contained 슬라이스로 반환하는 도구. PLAN §8 격리 실행 루프 5단계 중 *슬라이싱* 단계 도입.
+
+수행 작업:
+1. ✓ `Slicing/SourceRangeMapper.swift` — 1-based UTF-8 byte (line, column) → `String.Index` 변환. multibyte 안전. line 단위 substring 헬퍼는 attribute(`public`/`@…`) 보존을 위해 startLine 시작 ~ endLine 끝까지 통째 자른다.
+2. ✓ `Slicing/DeclIndex.swift` — AST 텍스트의 top-level decl을 색인. 들여쓰기 깊이(`  (` 2-space prefix)로 source_file 직속 노드만 추출. 8개 decl_kind 정규식 (func/struct/class/enum/protocol/typealias/extension/var). overload 다중 매치 지원.
+3. ✓ `Slicing/ReferenceCollector.swift` — decl range 안의 `(declref_expr|member_ref_expr|… decl="<chain>@file:line:col" …)`와 `(type_unqualified_ident id="X" …)`에서 외부 참조 이름 수집. 참조 site의 *선언 site*가 enclosing range 안이면 로컬 바인딩으로 분류해 제외 (parameter, let, inner func). range= 없는 라인은 직전 anchor의 부모 노드로 attribute.
+4. ✓ `Slicing/DependencyGraph.swift` — BFS transitive closure. `DeclIndex.find(name:)`로 매치되지 않는 이름은 `externalReferences`로. 사이클 회피, 오버로드는 모든 시그니처 포함.
+5. ✓ `Tools/SliceFunction.swift` — 입력 `BuildInput.file` + `function_name`. 동작: `swiftc -dump-ast` → DeclIndex → start entry 선택(overload는 signature_key 명시 강제) → BFS closure → SourceRangeMapper로 라인 단위 슬라이스 → import 라인 보존 → 자체 검증(`swiftc -typecheck` + `MissingSymbolClassifier`로 unresolvedReferences 분류).
+6. ✓ Mcpswx에 도구 등록 (총 13 도구).
+7. ✓ Fixture: `Tests/Fixtures/SliceTargets/Library.swift` — Counter struct + describe/formatLabel(의존) + unrelated(독립) + helper overload + useHelper 1 파일에 모두.
+8. ✓ 테스트:
+   - 단위: SourceRangeMapper 6 + DeclIndex 7 + ReferenceCollector 5 + DependencyGraph 5 = 23.
+   - 통합: SliceFunction 6 (struct 의존, self-typecheck, missing function, ambiguous overload, signature_key disambiguation, slice → suggest_stubs → build e2e).
+
+학습 사항:
+- **range= 시작 column은 *이름* 위치**: `struct Counter`의 range는 `3:8`(C 위치)이지 `3:1`(`public` 위치)이 아님. 슬라이스에 attribute 보존하려면 column 무시하고 *startLine 시작 ~ endLine 끝* 까지 라인 단위로 잘라야 함. SourceRangeMapper에 `substringForLines` 헬퍼로 캡슐화.
+- **AST의 paren-aware 정규식 함정**: `(declref_expr [^)]*?decl="…"`는 `decl="…(file)…"` 안의 paren 때문에 매치 실패. `[^)]*?` 대신 `\b.*?` lazy match로 해결. AST 정규식은 항상 paren-aware sample로 단위 테스트해야.
+- **range= 없는 AST 노드 attribution**: `(type_unqualified_ident id="X")`처럼 자체 range= 없는 노드는 직전 부모 range를 상속해야 enclosing 필터가 정확. ReferenceCollector는 last-seen anchor를 추적.
+- **swiftc decl chain의 base name 추출**: `sample.(file).Counter.value` → `Counter` (멤버 접근의 owner type), `sample.(file).Counter.init(value:)` → `Counter`. 끝의 `(...)` argument labels suffix 제거 + `(file)` 합성 segment 제거 + segments[1] (module 다음 user-defined) 사용.
+- **들여쓰기로 top-level 판별의 안정성**: swiftc의 AST 텍스트는 일관된 2-space 들여쓰기를 사용. Swift 6.x 내내 안정. 단위 테스트의 sample AST가 회귀 신호.
 
 ### Stage 4 후속 후보 (윤곽만)
 
-- 격리 실행 고도화 후속 — `slice_function` 슬라이싱 (Stage 4-2).
 - API diff (`api_diff`) — `-compare-to-baseline-path` 사용.
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
+- Stage 4-2 후속: 디렉토리/모듈 입력 (현재는 file 단일).
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 

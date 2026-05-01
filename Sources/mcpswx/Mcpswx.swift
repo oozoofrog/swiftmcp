@@ -18,6 +18,7 @@ struct Mcpswx {
         await registry.register(ApiSurfaceTool(toolchain: toolchain))
         await registry.register(ReportMissingSymbolsTool(toolchain: toolchain))
         await registry.register(SuggestStubsTool(toolchain: toolchain))
+        await registry.register(SliceFunctionTool(toolchain: toolchain))
 
         let server = Server(
             info: .init(
