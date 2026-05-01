@@ -22,15 +22,18 @@ public struct DependencyGraph: Sendable {
     /// BFS from `start`. Each visited entry expands to its references; references
     /// matching a top-level decl are queued, others recorded as external. For
     /// overloaded names (multiple `index.find(name:)` results), all overloads are
-    /// included — overloads are typically used together.
+    /// included — overloads are typically used together. Type bodies and their
+    /// extensions also share a `signatureKey` (both report the type's name), so
+    /// uniqueness is keyed on `startLine` rather than `signatureKey`: each decl in a
+    /// single file occupies a distinct starting line, and that lets the BFS pull in
+    /// every extension of a referenced type alongside the body.
     public func transitiveClosure(startingAt start: DeclIndex.Entry) -> Output {
-        var visitedKeys = Set<String>()
+        var visitedLines = Set<Int>()
         var visitedOrder: [DeclIndex.Entry] = []
         var external = Set<String>()
 
         var queue: [DeclIndex.Entry] = [start]
-        // Mark start as visited up-front to keep the queue idempotent for self-references.
-        visitedKeys.insert(start.signatureKey)
+        visitedLines.insert(start.startLine)
 
         while !queue.isEmpty {
             let entry = queue.removeFirst()
@@ -50,7 +53,7 @@ public struct DependencyGraph: Sendable {
                     continue
                 }
                 for candidate in candidates {
-                    if visitedKeys.insert(candidate.signatureKey).inserted {
+                    if visitedLines.insert(candidate.startLine).inserted {
                         queue.append(candidate)
                     }
                 }

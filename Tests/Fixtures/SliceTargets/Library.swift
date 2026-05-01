@@ -25,3 +25,11 @@ public func helper(_ x: Int) -> Int { x }
 public func useHelper() -> Int {
     return helper() + helper(7)
 }
+
+extension Counter {
+    public func doubled() -> Counter { Counter(value: value * 2) }
+}
+
+public func describeWithExtension(_ counter: Counter) -> String {
+    return formatLabel("\(counter.doubled().value)")
+}

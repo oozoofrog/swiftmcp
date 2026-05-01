@@ -67,6 +67,27 @@ struct DependencyGraphTests {
     }
 
     @Test
+    func includesTypeBodyAndExtensionSharingSameName() throws {
+        // The struct and its extension both report `signatureKey == "Counter"`.
+        // The BFS used to dedupe by signatureKey, which silently dropped the
+        // extension. Keying on startLine instead lets both come through.
+        let extAST = #"""
+        (source_file "/tmp/ext.swift"
+          (struct_decl decl_context=0x1 range=[/tmp/ext.swift:1:8 - line:3:1] "Counter")
+          (extension_decl decl_context=0x1 range=[/tmp/ext.swift:5:1 - line:7:1] "Counter")
+          (func_decl decl_context=0x1 range=[/tmp/ext.swift:9:8 - line:11:1] "callsExt()" interface_type="(Counter) -> Counter"
+            (declref_expr range=[/tmp/ext.swift:10:5 - line:10:5] decl="sample.(file).Counter.doubled()@/tmp/ext.swift:6:5" function_ref=single)))
+        """#
+        let index = DeclIndex.build(astText: extAST)
+        let graph = DependencyGraph(index: index, astText: extAST)
+        let entry = try #require(index.find(signatureKey: "callsExt()"))
+        let output = graph.transitiveClosure(startingAt: entry)
+        let kinds = output.closure.filter { $0.name == "Counter" }.map(\.kind)
+        #expect(kinds.contains(.type))
+        #expect(kinds.contains(.extensionDecl))
+    }
+
+    @Test
     func avoidsRevisitingDecls() throws {
         // Synthetic mutual-call AST: A → B and B → A. Closure must include each
         // exactly once, regardless of cycle direction.

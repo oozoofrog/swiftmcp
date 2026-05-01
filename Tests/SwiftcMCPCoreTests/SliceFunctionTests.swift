@@ -91,6 +91,37 @@ struct SliceFunctionTests {
         #expect(signatureKeys.contains("helper()") == false)
     }
 
+    /// Per Codex stop-time review: a struct and its extension share a
+    /// `signatureKey` (both report the type's name). The earlier visited-set
+    /// keyed on signatureKey would have admitted only one of them and dropped
+    /// the other — silently breaking slices that call extension methods.
+    /// `describeWithExtension` exercises that path by calling `counter.doubled()`,
+    /// which lives in the `extension Counter` block.
+    @Test
+    func slicesIncludeExtensionAlongsideTypeBody() async throws {
+        let tool = SliceFunctionTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(libraryPath())]),
+            "function_name": .string("describeWithExtension")
+        ]))
+        let result = try decodeResult(SliceFunctionTool.Result.self, response)
+
+        // Both the struct body and the extension must be in the slice.
+        let kinds = result.includedSymbols.filter { $0.name == "Counter" }.map(\.kind)
+        #expect(kinds.contains(.type))
+        #expect(kinds.contains(.extensionDecl))
+
+        // The slice should contain the extension's `doubled()` declaration.
+        #expect(result.slicedCode.contains("extension Counter"))
+        #expect(result.slicedCode.contains("doubled()"))
+
+        // And it must self-typecheck — the previous bug surfaced as
+        // "value of type 'Counter' has no member 'doubled'" when the extension
+        // was dropped.
+        #expect(result.verification.compilerExitCode == 0)
+        #expect(result.verification.unresolvedReferences.isEmpty)
+    }
+
     /// End-to-end: slice → suggest_stubs (clean slice should produce no stubs) →
     /// build_isolated_snippet on the slice (succeeds because the slice is
     /// self-contained, no main entry point so we just check buildExitCode).

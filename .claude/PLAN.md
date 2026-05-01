@@ -501,6 +501,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **range= 없는 AST 노드 attribution**: `(type_unqualified_ident id="X")`처럼 자체 range= 없는 노드는 직전 부모 range를 상속해야 enclosing 필터가 정확. ReferenceCollector는 last-seen anchor를 추적.
 - **swiftc decl chain의 base name 추출**: `sample.(file).Counter.value` → `Counter` (멤버 접근의 owner type), `sample.(file).Counter.init(value:)` → `Counter`. 끝의 `(...)` argument labels suffix 제거 + `(file)` 합성 segment 제거 + segments[1] (module 다음 user-defined) 사용.
 - **들여쓰기로 top-level 판별의 안정성**: swiftc의 AST 텍스트는 일관된 2-space 들여쓰기를 사용. Swift 6.x 내내 안정. 단위 테스트의 sample AST가 회귀 신호.
+- **`signatureKey` 충돌: type body vs extension** (Codex stop-time review 지적): `struct Counter`와 `extension Counter`는 둘 다 `name="Counter"` + `signatureKey="Counter"`로 색인됨. BFS의 visited set이 signatureKey 기반이면 둘 중 하나만 들어가고 나머지가 누락 → extension 메서드를 호출하는 슬라이스가 self-typecheck 실패. 수정: visited 키를 `startLine`으로 (한 파일 내 unique). 같은 이름의 모든 entries(struct + N개 extension + 오버로드)가 모두 큐에 들어감.
 
 ### Stage 4 후속 후보 (윤곽만)
 
