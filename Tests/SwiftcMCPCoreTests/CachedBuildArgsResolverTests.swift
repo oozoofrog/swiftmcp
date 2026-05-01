@@ -252,6 +252,67 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review: SwiftPM packages organize sources as
+    /// `Sources/<TargetName>/*.swift`. A new file dropped into the target
+    /// directory bumps *that target directory's* mtime, but neither
+    /// `Sources/` nor `Package.swift` change. The fingerprint must therefore
+    /// include each input file's parent directory; otherwise the cached
+    /// `inputFiles` list silently lags reality.
+    @Test
+    func invalidatesWhenSwiftPMTargetGainsNewSourceFile() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let pkgDir = scratch.directory.appending(path: "Pkg", directoryHint: .isDirectory)
+        let targetDir = pkgDir
+            .appending(path: "Sources", directoryHint: .isDirectory)
+            .appending(path: "Lib", directoryHint: .isDirectory)
+        try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+        try "// initial\n".write(
+            to: pkgDir.appending(path: "Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let originalSource = targetDir.appending(path: "Lib.swift")
+        try "public let x = 1\n".write(to: originalSource, atomically: true, encoding: .utf8)
+
+        // The stub returns ONLY the original source. After we add a sibling we
+        // expect the cache to miss — which forces a re-resolve, and (in real life)
+        // the live SwiftPM resolver would then return the expanded inputFiles
+        // list. Here we just observe `callCount` jumping.
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [originalSource.path],
+            moduleName: "Lib"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.swiftPMPackage(
+            path: pkgDir.path,
+            targetName: "Lib",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Drop a new file into Sources/Lib — neither Package.swift nor
+        // Sources/ itself sees an mtime bump, but Sources/Lib does. The
+        // fingerprint must catch that via the parent-of-input-file path.
+        try "public let y = 2\n".write(
+            to: targetDir.appending(path: "NewFile.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        // FS-clock granularity safety: force the directory's mtime forward.
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: targetDir.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()

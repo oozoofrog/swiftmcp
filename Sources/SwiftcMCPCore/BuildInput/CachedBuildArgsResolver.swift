@@ -94,6 +94,18 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         paths.formUnion(resolved.inputFiles)
         paths.formUnion(resolved.searchPaths)
         paths.formUnion(resolved.frameworkSearchPaths)
+        // Parent directories of every input file. macOS/Linux bump a directory's
+        // mtime when entries are added or removed inside it, so tracking parents
+        // catches "new sibling source file appeared" scenarios that the file-list
+        // alone misses. Critical for SwiftPM packages: a new file dropped into
+        // `Sources/<TargetName>/` bumps that target directory's mtime, even
+        // though `Package.swift` and the package root itself are untouched.
+        for file in resolved.inputFiles {
+            let parent = (file as NSString).deletingLastPathComponent
+            if !parent.isEmpty {
+                paths.insert(parent)
+            }
+        }
         // Manifest-style paths: case-specific, drive cache invalidation when the
         // user edits the project descriptor or adds/removes a file from a tracked
         // directory.
