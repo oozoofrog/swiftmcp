@@ -5,7 +5,7 @@ import Foundation
 /// `ResolvedBuildArgs`. Stage 3.A: `file` + `directory`. Stage 3.B: `directory` +
 /// `search_paths`. Stage 3.C: `swiftPMPackage`. Later sub-stages add `xcodeProject`,
 /// `xcodeWorkspace`.
-public enum BuildInput: Sendable, Equatable {
+public enum BuildInput: Sendable, Hashable {
     case file(path: String, target: String? = nil)
     case directory(
         path: String,

@@ -79,6 +79,30 @@ struct BuildInputDecodingTests {
     }
 }
 
+@Suite("BuildInput Hashable")
+struct BuildInputHashableTests {
+    @Test
+    func sameValueProducesSameHash() {
+        let a: BuildInput = .file(path: "/x.swift", target: "arm64")
+        let b: BuildInput = .file(path: "/x.swift", target: "arm64")
+        #expect(a.hashValue == b.hashValue)
+        var set: Set<BuildInput> = []
+        set.insert(a); set.insert(b)
+        #expect(set.count == 1)
+    }
+
+    @Test
+    func distinctValuesAreDistinctSetMembers() {
+        let s: Set<BuildInput> = [
+            .file(path: "/a.swift", target: nil),
+            .file(path: "/b.swift", target: nil),
+            .directory(path: "/d", moduleName: nil, target: nil, searchPaths: []),
+            .swiftPMPackage(path: "/p", targetName: nil, configuration: nil, target: nil)
+        ]
+        #expect(s.count == 4)
+    }
+}
+
 @Suite("LocalFilesResolver")
 struct LocalFilesResolverTests {
     @Test

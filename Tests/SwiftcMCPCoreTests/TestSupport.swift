@@ -62,6 +62,27 @@ func makeServer(registry: ToolRegistry = ToolRegistry()) -> Server {
     )
 }
 
+/// Spy `BuildArgsResolver` that records how many times the wrapped resolver
+/// was invoked. Used to verify `CachedBuildArgsResolver` hit/miss behaviour.
+final class CountingResolver: BuildArgsResolver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _callCount = 0
+    let inner: BuildArgsResolver
+
+    init(_ inner: BuildArgsResolver = DefaultBuildArgsResolver()) {
+        self.inner = inner
+    }
+
+    var callCount: Int {
+        lock.withLock { _callCount }
+    }
+
+    func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
+        lock.withLock { _callCount += 1 }
+        return try await inner.resolveArgs(for: input)
+    }
+}
+
 /// Resolves `Tests/Fixtures/<name>/` relative to the source-file location of the caller.
 /// Test targets don't own a resource bundle in this package, so fixtures are read by path.
 func fixturePath(_ relative: String, file: StaticString = #filePath) -> String {

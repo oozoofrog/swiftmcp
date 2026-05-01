@@ -506,11 +506,30 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **`typealias` 노드는 `_decl` 서픽스 없음**: 다른 top-level decl은 `(struct_decl …)`/`(func_decl …)`처럼 `_decl` 서픽스를 가지지만 typealias만 `(typealias …)`로 emit됨. DeclIndex 정규식이 `typealias_decl`만 매치하면 typealias가 색인 안 되어 의존 추적이 실패. `(?:_decl)?` 옵셔널로 양 형식 모두 매치.
 - **closure → 텍스트 렌더링 시 라인 중복** (Codex stop-time review 세 번째 지적): closure에 같은 라인 두 decl이 있거나 line range가 겹치면 `mapper.substringForLines`를 각각 호출해 동일 텍스트가 두 번 emit됨 → swiftc가 "duplicate definition" 에러. 수정: 렌더링 전에 closure decl들의 `[startLine, endLine]` interval을 union-merge해 disjoint 범위로 축약. 인접하지만 겹치지 않는 범위(`a`가 line 3 끝, `b`가 line 5 시작)는 분리 유지해 `\n\n` join이 원본 빈 줄 모양을 보존.
 
+### Stage 4-3 (완료) — BuildArgsResolver 점진 캐싱
+
+233 tests / 45 suites 통과. PLAN §10 미해결 항목 중 "BuildArgsResolver 결과 캐싱"을 1차 마일스톤으로 도입. SwiftPM/xcodebuild 호출이 같은 입력에 대해 반복 spawn되는 비용을 in-memory cache로 제거.
+
+수행 작업 (3-agent team `stage4-3-cache`로 병렬):
+1. ✓ (architect) `BuildInput`에 `Hashable` conform 추가. 모든 associated values(String/[String])가 Hashable이라 자동 합성. `Tests/SwiftcMCPCoreTests/BuildInputTests.swift`에 `BuildInput Hashable` suite (sameValueProducesSameHash, distinctValuesAreDistinctSetMembers).
+2. ✓ (architect) `Sources/SwiftcMCPCore/BuildInput/CachedBuildArgsResolver.swift` actor passthrough skeleton — 공개 surface 정의 (init/resolveArgs/clearCache/cachedEntryCount).
+3. ✓ (develop) actor 본체 구현. `cache: [BuildInput: ResolvedBuildArgs]` + hit 시 `isStillValid` (inputFiles + searchPaths + frameworkSearchPaths 모두 `FileManager.fileExists` 통과 필요). 실패 시 entry 제거 후 wrapped 재호출.
+4. ✓ (develop) `Sources/mcpswx/Mcpswx.swift`에 `let cachedResolver = CachedBuildArgsResolver(wrapping: DefaultBuildArgsResolver())` 1개 인스턴스 → 9개 file/directory-accepting 도구(FindSlowTypecheck/EmitAST/EmitSIL/EmitIR/CompileStats/CallGraph/ConcurrencyAudit/ApiSurface/SliceFunction)에 명시 주입. 코드 문자열 입력 4개 도구는 변경 없음.
+5. ✓ (develop) `Tests/SwiftcMCPCoreTests/TestSupport.swift`에 `CountingResolver` 헬퍼 (NSLock + `lock.withLock {}` 사용으로 actor isolation 외부에서도 thread-safe).
+6. ✓ (test) `CachedBuildArgsResolverTests.swift` 단위 7건 + 통합 1건. invalidation 테스트는 "1차 resolve 후 입력 파일/searchPath 디렉토리 강제 삭제 → 2차 resolve가 wrapped를 재호출(callCount==2)"로 검증. 통합 timing 테스트(`swiftPMPackageHitsCacheSecondTime`)는 SamplePackage 두 번 resolve 측정 — 두 번째가 첫 번째의 5배+ 빠름이 실측 확인됨.
+
+학습 사항:
+- **NSLock + async**: `lock.lock(); defer { lock.unlock() }` 패턴이 `async` 함수의 await 사이에서 lock을 잡고 있으면 actor reentrance 우회 가능성 + Swift 6 strict concurrency가 경고. `lock.withLock {}` 클로저 형태가 안전 — await 없는 동기 영역에서만 lock을 잡고 release.
+- **path 존재 검증을 모든 hit에서 수행**: PersistentScratch는 OS 임시 디렉토리 정리에 위임되므로 *수일 후* 사라질 수 있음. cache hit가 stale path를 반환하면 downstream swiftc 호출이 silent 실패. `inputFiles + searchPaths + frameworkSearchPaths` 합쳐서 `allSatisfy { fileExists }`로 검증하고 1개라도 누락이면 무효화.
+- **테스트 결정성과 운영 캐시 분리**: 도구 init의 `resolver:` 파라미터는 디폴트 `DefaultBuildArgsResolver()` 유지. Mcpswx만 명시적으로 cached 인스턴스 주입. 기존 233개 테스트는 cache 없는 상태에서 동작해 결정성 보존, 운영 바이너리에만 캐시 적용.
+- **3-agent 분업의 unblock 순서**: architect(skeleton + Hashable) → develop(actor 본체 + wiring + 헬퍼) → test(단위 + 통합 + 회귀). architect의 skeleton이 *passthrough*라서 develop이 본체를 채울 때 build를 깨지 않음. test가 실패 발견 시 develop에게 SendMessage로 reassign(NSLock fix가 이 경로로 진행).
+
 ### Stage 4 후속 후보 (윤곽만)
 
 - API diff (`api_diff`) — `-compare-to-baseline-path` 사용.
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
-- Stage 4-2 후속: 디렉토리/모듈 입력 (현재는 file 단일).
+- Stage 4-2 후속: 디렉토리/모듈 입력 슬라이싱 (현재는 file 단일).
+- Stage 4-3 후속: cache invalidation에 manifest mtime 추가 (현재는 path 존재 검증만).
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 
@@ -537,7 +556,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - `build_isolated_snippet`의 sandbox 정책 (Stage 4 격리 실행 고도화 시 결정).
 - progress 노티피케이션 도입 시점 (Stage 3.C/3.D의 SwiftPM/xcodebuild 호출이 길어지면 검토).
 - CLI 진입점(`mcpswx-cli`)의 도입 시점 (Stage 3 종료 후 재검토).
-- BuildArgsResolver 결과 캐싱 정책 (Stage 3 종료 후).
+- ~~BuildArgsResolver 결과 캐싱 정책 (Stage 3 종료 후).~~ → Stage 4-3에서 결정·도입. in-memory + path 존재 검증. mtime/disk 영속화는 후속.
 - "playground/실행 모델 추가"가 본 MCP에 흡수될지, 별도 서버로 분리될지 (Stage 4+ 결정).
 
 ## 11. 진행 규칙
