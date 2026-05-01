@@ -522,7 +522,34 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **NSLock + async**: `lock.lock(); defer { lock.unlock() }` 패턴이 `async` 함수의 await 사이에서 lock을 잡고 있으면 actor reentrance 우회 가능성 + Swift 6 strict concurrency가 경고. `lock.withLock {}` 클로저 형태가 안전 — await 없는 동기 영역에서만 lock을 잡고 release.
 - **path 존재 검증을 모든 hit에서 수행**: PersistentScratch는 OS 임시 디렉토리 정리에 위임되므로 *수일 후* 사라질 수 있음. cache hit가 stale path를 반환하면 downstream swiftc 호출이 silent 실패. `inputFiles + searchPaths + frameworkSearchPaths` 합쳐서 `allSatisfy { fileExists }`로 검증하고 1개라도 누락이면 무효화.
 - **테스트 결정성과 운영 캐시 분리**: 도구 init의 `resolver:` 파라미터는 디폴트 `DefaultBuildArgsResolver()` 유지. Mcpswx만 명시적으로 cached 인스턴스 주입. 기존 233개 테스트는 cache 없는 상태에서 동작해 결정성 보존, 운영 바이너리에만 캐시 적용.
-- **3-agent 분업의 unblock 순서**: architect(skeleton + Hashable) → develop(actor 본체 + wiring + 헬퍼) → test(단위 + 통합 + 회귀). architect의 skeleton이 *passthrough*라서 develop이 본체를 채울 때 build를 깨지 않음. test가 실패 발견 시 develop에게 SendMessage로 reassign(NSLock fix가 이 경로로 진행).
+- **3-agent 분업의 unblock 순서**: architect(skeleton + Hashable) → develop(actor 본체 + wiring + 헬퍼) → test(단위 + 통합 + 회귀). architect의 skeleton이 *passthrough*라서 develop이 본체를 채울 때 build를 깨지 않음. test가 실패 발견 시 develop에게 SendMessage로 reassign.
+
+### Stage 4-3 후속 fix — fingerprint invalidation + lock 제거 (Codex review + 사용자 지시)
+
+후속 4-3a 단계로 두 가지 보강:
+
+1. **Codex stop-time review 지적 — fingerprint invalidation**: 1차 4-3은 *path 존재* 검증만 했다. 사용자가 Package.swift를 수정하거나 Sources/에 새 파일을 추가하면 cache hit이 발생해 stale `ResolvedBuildArgs`(예: 새 파일이 빠진 inputFiles)를 반환. 수정: cache entry에 *fingerprint*(`[String: TimeInterval]`, path → mtime epoch sec)를 함께 저장. hit 시 fingerprint 재계산 + 비교, 일치하지 않으면 invalidate. 추적 path 집합:
+   - `inputFiles + searchPaths + frameworkSearchPaths` (resolved 결과의 전체 path) — 항상.
+   - `manifestPaths(for: input)` (case별):
+     - `.file(path)` → `[path]`.
+     - `.directory(path, ..., searchPaths)` → `[path] + searchPaths`. *디렉토리 mtime은 listing 변경(파일 추가/삭제) 시 OS가 자동 bump*.
+     - `.swiftPMPackage(path)` → `[path, path/Package.swift, path/Package.resolved, path/Sources]`.
+     - `.xcodeProject(path)` → `[path, path/project.pbxproj]`.
+     - `.xcodeWorkspace(path)` → `[path, path/contents.xcworkspacedata]`.
+   - missing path는 mtime sentinel `-1`로 저장 → 일치/불일치 모두 추적 가능.
+   - 단위 테스트 3건 추가: `invalidatesWhenInputFileMtimeChanges`, `invalidatesWhenDirectoryListingChanges`, `invalidatesWhenSwiftPMManifestChanges`(fingerprint만 검증하기 위한 `StaticPackageResolver` test stub 도입).
+
+2. **사용자 지시 — 모든 lock 제거**: 프로젝트 정책으로 NSLock/os_unfair_lock/atomics 사용 금지. 두 군데 변경:
+   - `ProcessRunner.PIDHolder`: `final class @unchecked Sendable` + `NSLock` → `actor`. `set/clear/markCancelled`이 모두 async. `withTaskCancellationHandler.onCancel`은 동기적이라 actor에 직접 접근 불가 → `Task { await holder.markCancelled() }`로 unstructured Task 발사. 약간의 scheduling 지연 추가되나 60s wall-clock fallback 대비 마진 충분.
+   - `Tests/SwiftcMCPCoreTests/TestSupport.swift::CountingResolver`: `final class @unchecked Sendable + NSLock` → `actor`. `callCount` 접근부에 `await` 추가.
+   - `taskCancellationTerminatesChildProcess` 테스트의 elapsed 임계값 `5.0s` → `7.0s` (actor + Task hop의 추가 ms를 부하 시에도 안전하게 흡수). 60s timeout fallback 대비 8x 마진 유지.
+
+236 tests / 45 suites (이전 233 → +3).
+
+학습 사항 추가:
+- **lock 정책**: 본 프로젝트는 lock primitives 미사용. 동시성 안전은 actor 격리만으로 보장. `withTaskCancellationHandler.onCancel`처럼 동기적 콜백에서 actor에 접근해야 하는 경우 *unstructured `Task { await … }`*로 hop, scheduling 지연을 받아들이고 lock-free 유지.
+- **fingerprint invalidation의 directory mtime**: 디렉토리 안 파일 추가/삭제 시 OS가 디렉토리 자체의 mtime을 bump. 이 한 가지 신호로 *새 파일 추가* 시나리오를 별도 listing 비교 없이 잡을 수 있다.
+- **`StaticPackageResolver` test stub 패턴**: 외부 CLI(`swift package describe`)를 실제 호출하지 않고 fingerprint만 검증하고 싶을 때, BuildArgsResolver 인터페이스를 conform하는 test-only stub을 두면 단위 테스트가 millisecond 단위로 빠르고 결정성도 확보. plan §10의 캐싱 정책 결정 후속 작업에 재사용 가능 패턴.
 
 ### Stage 4 후속 후보 (윤곽만)
 

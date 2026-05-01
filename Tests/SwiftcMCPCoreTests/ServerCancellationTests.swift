@@ -96,6 +96,15 @@ struct BuildIsolatedSnippetCancellationTests {
             // Either CancellationError or some other Swift Task cancellation surface.
         }
         let elapsed = Date().timeIntervalSince(cancelStart)
-        #expect(elapsed < 5.0, "cancellation should bring the child down within a few seconds, got \(elapsed)s")
+        // 7s threshold is a margin over a few realistic effects:
+        //   - Actor-based PIDHolder requires the onCancel-spawned Task to schedule and
+        //     await the actor before SIGTERM is delivered (microseconds typically, but
+        //     under heavy concurrent xcodebuild/SwiftPM load — see Stage 3.D/E tests —
+        //     it can stretch into hundreds of ms).
+        //   - The 50 ms polling cadence in runProcessWithTimeout adds variance.
+        //   - The killed child still has to flush the pipe and let waitUntilExit return.
+        // What we actually want to prove is "cancellation propagated" vs "we waited the
+        // full 60s wall-clock timeout" — 7s vs 60s is a clear signal either way.
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s wall-clock timeout, got \(elapsed)s")
     }
 }

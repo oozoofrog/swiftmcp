@@ -64,22 +64,36 @@ func makeServer(registry: ToolRegistry = ToolRegistry()) -> Server {
 
 /// Spy `BuildArgsResolver` that records how many times the wrapped resolver
 /// was invoked. Used to verify `CachedBuildArgsResolver` hit/miss behaviour.
-final class CountingResolver: BuildArgsResolver, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _callCount = 0
+/// No locks: actor isolation serializes both reads and writes of `callCount`.
+actor CountingResolver: BuildArgsResolver {
+    private(set) var callCount: Int = 0
     let inner: BuildArgsResolver
 
     init(_ inner: BuildArgsResolver = DefaultBuildArgsResolver()) {
         self.inner = inner
     }
 
-    var callCount: Int {
-        lock.withLock { _callCount }
+    func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
+        callCount += 1
+        return try await inner.resolveArgs(for: input)
     }
+}
+
+/// Stub `BuildArgsResolver` that returns a synthetic `ResolvedBuildArgs` for
+/// `.swiftPMPackage` inputs without invoking the SwiftPM CLI. Useful for tests
+/// that exercise `CachedBuildArgsResolver`'s fingerprint behaviour around
+/// `Package.swift` mtime, where the real `swift package describe` cost would
+/// dominate and obscure the fingerprint signal.
+struct StaticPackageResolver: BuildArgsResolver {
+    let inputFiles: [String]
+    let moduleName: String?
 
     func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
-        lock.withLock { _callCount += 1 }
-        return try await inner.resolveArgs(for: input)
+        ResolvedBuildArgs(
+            inputFiles: inputFiles,
+            moduleName: moduleName,
+            target: input.target
+        )
     }
 }
 

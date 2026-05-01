@@ -17,7 +17,7 @@ struct CachedBuildArgsResolverUnitTests {
         _ = try await cache.resolveArgs(for: input)
         _ = try await cache.resolveArgs(for: input)
 
-        #expect(counting.callCount == 1)
+        #expect(await counting.callCount == 1)
         let count = await cache.cachedEntryCount()
         #expect(count == 1)
     }
@@ -35,7 +35,7 @@ struct CachedBuildArgsResolverUnitTests {
         _ = try await cache.resolveArgs(for: .file(path: fileA.path, target: nil))
         _ = try await cache.resolveArgs(for: .file(path: fileB.path, target: nil))
 
-        #expect(counting.callCount == 2)
+        #expect(await counting.callCount == 2)
         let count = await cache.cachedEntryCount()
         #expect(count == 2)
     }
@@ -56,14 +56,14 @@ struct CachedBuildArgsResolverUnitTests {
         let input = BuildInput.file(path: fileURL.path, target: nil)
 
         _ = try await cache.resolveArgs(for: input)
-        #expect(counting.callCount == 1)
+        #expect(await counting.callCount == 1)
 
         try FileManager.default.removeItem(at: fileURL)
 
         await #expect(throws: MCPError.self) {
             _ = try await cache.resolveArgs(for: input)
         }
-        #expect(counting.callCount == 2)
+        #expect(await counting.callCount == 2)
     }
 
     @Test
@@ -98,12 +98,12 @@ struct CachedBuildArgsResolverUnitTests {
         )
 
         _ = try await cache.resolveArgs(for: input)
-        #expect(counting.callCount == 1)
+        #expect(await counting.callCount == 1)
 
         try fm.removeItem(at: searchPath)
 
         _ = try await cache.resolveArgs(for: input)
-        #expect(counting.callCount == 2)
+        #expect(await counting.callCount == 2)
     }
 
     @Test
@@ -123,10 +123,133 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(countAfterClear == 0)
 
         _ = try await cache.resolveArgs(for: input)
-        #expect(counting.callCount == 2)
+        #expect(await counting.callCount == 2)
 
         let countAfterRefill = await cache.cachedEntryCount()
         #expect(countAfterRefill == 1)
+    }
+
+    /// Per Codex stop-time review: cache hits must not return stale analysis when
+    /// a tracked input file's content has changed. The fingerprint snapshots each
+    /// path's mtime; a touch (or any actual edit) bumps mtime and invalidates.
+    @Test
+    func invalidatesWhenInputFileMtimeChanges() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fileURL = try scratch.write(name: "edit.swift", contents: "let v = 1\n")
+
+        let counting = CountingResolver(LocalFilesResolver())
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.file(path: fileURL.path, target: nil)
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Bump mtime forward without changing file contents — the fingerprint
+        // mismatch alone must trigger a re-resolve.
+        let later = Date().addingTimeInterval(60)
+        try FileManager.default.setAttributes(
+            [.modificationDate: later],
+            ofItemAtPath: fileURL.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
+    /// Per Codex stop-time review: cache hits must catch *new* files added under a
+    /// tracked directory. The directory's own mtime gets bumped when an entry is
+    /// added/removed (macOS/Linux), so the fingerprint detects the change.
+    @Test
+    func invalidatesWhenDirectoryListingChanges() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let sourceDir = scratch.directory.appending(path: "Sources", directoryHint: .isDirectory)
+        try fm.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try "let a = 1\n".write(
+            to: sourceDir.appending(path: "A.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let counting = CountingResolver(LocalFilesResolver())
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.directory(
+            path: sourceDir.path,
+            moduleName: nil,
+            target: nil,
+            searchPaths: []
+        )
+
+        let firstResolve = try await cache.resolveArgs(for: input)
+        #expect(firstResolve.inputFiles.count == 1)
+        #expect(await counting.callCount == 1)
+
+        // Drop a new file into the tracked directory. The directory's mtime will
+        // move forward; the fingerprint check must catch it and invalidate.
+        try "let b = 2\n".write(
+            to: sourceDir.appending(path: "B.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        // Force a directory mtime bump in case the FS clock granularity hasn't
+        // ticked yet (some FSes have second-level mtime resolution).
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: sourceDir.path
+        )
+
+        let secondResolve = try await cache.resolveArgs(for: input)
+        #expect(secondResolve.inputFiles.count == 2)
+        #expect(await counting.callCount == 2)
+    }
+
+    /// Per Codex stop-time review: editing a SwiftPM `Package.swift` (e.g. adding
+    /// a new target) must invalidate the cache entry for that package's input —
+    /// the resolver's stored `targets[]` view is otherwise stale. We use a
+    /// `StaticPackageResolver` (TestSupport.swift) that returns a synthetic
+    /// ResolvedBuildArgs without spawning swift CLI; we're testing fingerprint
+    /// behavior, not the SwiftPM resolver itself.
+    @Test
+    func invalidatesWhenSwiftPMManifestChanges() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let pkgDir = scratch.directory.appending(path: "Pkg", directoryHint: .isDirectory)
+        let sourcesDir = pkgDir.appending(path: "Sources", directoryHint: .isDirectory)
+        try fm.createDirectory(at: sourcesDir, withIntermediateDirectories: true)
+        let manifestURL = pkgDir.appending(path: "Package.swift")
+        try "// initial\n".write(to: manifestURL, atomically: true, encoding: .utf8)
+        let sourceURL = sourcesDir.appending(path: "Lib.swift")
+        try "public let x = 1\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [sourceURL.path],
+            moduleName: "Lib"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.swiftPMPackage(
+            path: pkgDir.path,
+            targetName: "Lib",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Edit Package.swift. The fingerprint stored on resolve includes
+        // `<pkg>/Package.swift`, so this must invalidate even though the input
+        // files we resolved (Lib.swift) are untouched.
+        try "// updated\n".write(to: manifestURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)],
+            ofItemAtPath: manifestURL.path
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
     }
 
     @Test
@@ -161,7 +284,7 @@ struct CachedBuildArgsResolverUnitTests {
         // Actor isolation usually serializes both calls so the second one finds
         // the entry already stored — but the plan permits up to 2 since we
         // don't yet flow-coalesce concurrent misses for the same key.
-        #expect((1...2).contains(counting.callCount))
+        #expect((1...2).contains(await counting.callCount))
     }
 }
 

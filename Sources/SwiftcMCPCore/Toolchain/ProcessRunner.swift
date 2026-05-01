@@ -20,28 +20,30 @@ public struct TimedProcessResult: Sendable, Equatable {
     public let timedOut: Bool
 }
 
-/// Side channel for delivering parent-task cancellation into a detached process-running task.
-/// `withTaskCancellationHandler.onCancel` is sync and cannot await actors, so we hold the pid
-/// behind an NSLock and signal SIGTERM directly from the cancellation handler.
+/// Side channel for delivering parent-task cancellation into the detached process-running
+/// task. Modeled as an `actor` to keep all state mutation serialized — this project does
+/// not use `NSLock` / `os_unfair_lock` / atomics; concurrency safety is purely via actor
+/// isolation.
 ///
-/// `markCancelled()` and `set()` interlock so that a cancel arriving *before* the detached
-/// task has spawned the child still results in the child receiving SIGTERM the moment its
-/// pid is registered. Without this, a heavily-loaded executor can let the parent's cancel
-/// fire while `Task.detached` is still queued — `onCancel` then sees pid=0, silently drops
-/// the signal, and the child runs to natural completion.
-final class PIDHolder: @unchecked Sendable {
+/// `markCancelled()` and `set()` interlock so a cancel arriving *before* the child is
+/// even spawned still results in SIGTERM the moment the pid is registered. Without that
+/// sticky flag, a heavily loaded executor can let the parent's cancel fire while
+/// `Task.detached` is still queued — `onCancel` then sees pid=0, the signal vanishes,
+/// and the child runs to natural completion.
+///
+/// `onCancel` closures are synchronous (cannot await an actor). We bridge by spawning an
+/// unstructured `Task` from inside `onCancel` that awaits the actor. This adds a tiny
+/// scheduling delay but is `lock`-free; SIGTERM still reaches the child well before the
+/// child's own wall-clock or natural exit.
+actor PIDHolder {
     private var pid: pid_t = 0
     private var cancelled: Bool = false
-    private let lock = NSLock()
 
-    /// Register the pid of a freshly-spawned child. If a cancellation has already been
-    /// delivered (race with `onCancel` firing before this call), immediately raise SIGTERM.
+    /// Register the pid of a freshly-spawned child. If a cancel was already delivered
+    /// (race with `onCancel` firing before this call), immediately raise SIGTERM.
     func set(_ value: pid_t) {
-        lock.lock()
         pid = value
-        let pendingCancel = cancelled && value > 0
-        lock.unlock()
-        if pendingCancel {
+        if cancelled && value > 0 {
             #if canImport(Darwin)
             kill(value, SIGTERM)
             #endif
@@ -49,32 +51,19 @@ final class PIDHolder: @unchecked Sendable {
     }
 
     func clear() {
-        lock.lock()
         pid = 0
         // We deliberately don't reset `cancelled`; the holder is per-call and the
         // cancellation state is sticky for the lifetime of the run.
-        lock.unlock()
-    }
-
-    /// Snapshot the current pid. Returns 0 when no child has been spawned yet (or it has
-    /// already been cleared after exit).
-    func get() -> pid_t {
-        lock.lock()
-        defer { lock.unlock() }
-        return pid
     }
 
     /// Mark the call as cancelled. If the child is already running, signal it; otherwise
     /// the eventual `set()` will pick up the pending cancel and signal the child as soon
     /// as it becomes addressable.
     func markCancelled() {
-        lock.lock()
         cancelled = true
-        let livePid = pid
-        lock.unlock()
-        if livePid > 0 {
+        if pid > 0 {
             #if canImport(Darwin)
-            kill(livePid, SIGTERM)
+            kill(pid, SIGTERM)
             #endif
         }
     }
@@ -117,8 +106,10 @@ public func runProcess(
                 throw ProcessRunnerError.launchFailed("\(error)")
             }
 
-            holder.set(process.processIdentifier)
-            defer { holder.clear() }
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
 
             let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
@@ -131,12 +122,11 @@ public func runProcess(
             )
         }.value
     } onCancel: {
-        // Use markCancelled() rather than reading the pid directly: when the parent
-        // task is cancelled before the detached process spawn has even been scheduled
-        // (under heavy executor load), holder.get() would return 0 and SIGTERM would
-        // be lost. markCancelled() flips a sticky flag so set() will signal the child
-        // as soon as it appears.
-        holder.markCancelled()
+        // onCancel is synchronous and cannot await an actor. Spawn an unstructured Task
+        // that delivers the cancel to the holder. The Task's body awaits markCancelled
+        // — by then either the child is running (immediate SIGTERM) or set() will
+        // observe the sticky cancelled flag when the spawn finally lands.
+        Task { await holder.markCancelled() }
     }
 }
 
@@ -174,8 +164,10 @@ public func runProcessWithTimeout(
                 throw ProcessRunnerError.launchFailed("\(error)")
             }
 
-            holder.set(process.processIdentifier)
-            defer { holder.clear() }
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
 
             let pollInterval: TimeInterval = 0.05
             let deadline = Date().addingTimeInterval(timeout)
@@ -210,11 +202,8 @@ public func runProcessWithTimeout(
             )
         }.value
     } onCancel: {
-        // Use markCancelled() rather than reading the pid directly: when the parent
-        // task is cancelled before the detached process spawn has even been scheduled
-        // (under heavy executor load), holder.get() would return 0 and SIGTERM would
-        // be lost. markCancelled() flips a sticky flag so set() will signal the child
-        // as soon as it appears.
-        holder.markCancelled()
+        // See note in runProcess: onCancel is synchronous; we hop into the actor via an
+        // unstructured Task.
+        Task { await holder.markCancelled() }
     }
 }
