@@ -110,16 +110,16 @@ public struct XcodebuildResolver: BuildArgsResolver {
             "-configuration", configuration
         ]
         arguments.append(contentsOf: overrides)
-        let result: ProcessResult
+        // We only treat *launch* failures (xcodebuild itself can't be spawned, or the
+        // path is wrong) as resolver errors. A non-zero exit from xcodebuild typically
+        // means swift code in the target failed to compile — but xcodebuild still
+        // materializes the SwiftFileList before swiftc's compile step, and the user's
+        // analysis tool will surface the same diagnostics on its own swiftc call. Per
+        // PLAN §0.3, compiler diagnostics are the analysis output, not a tool error.
         do {
-            result = try await runProcess(executable: "/usr/bin/xcodebuild", arguments: arguments)
+            _ = try await runProcess(executable: "/usr/bin/xcodebuild", arguments: arguments)
         } catch {
             throw MCPError.toolExecutionFailed("xcodebuild build launch failed: \(error)")
-        }
-        guard result.exitCode == 0 else {
-            throw MCPError.toolExecutionFailed(
-                "`xcodebuild build` failed (exit=\(result.exitCode)) for target '\(target)' (configuration \(configuration)): \(truncateForDiagnostic(result.standardError.isEmpty ? result.standardOutput : result.standardError))"
-            )
         }
     }
 
@@ -215,14 +215,20 @@ public struct XcodebuildResolver: BuildArgsResolver {
     }
 
     private func readSwiftFileList(at path: String) throws -> [String] {
+        // Build failure on the user's Swift code still produces a SwiftFileList (the
+        // build system materializes it before swiftc runs). If the file is genuinely
+        // missing we're past the point where xcodebuild has produced its plan — that's
+        // a tool-execution failure, not a compile-diagnostic-as-output situation.
         guard FileManager.default.fileExists(atPath: path) else {
-            throw MCPError.internalError("SwiftFileList not found at \(path)")
+            throw MCPError.toolExecutionFailed(
+                "xcodebuild did not produce a SwiftFileList at \(path) — the target may have no Swift sources or the build never reached the compile stage."
+            )
         }
         let raw: String
         do {
             raw = try String(contentsOfFile: path, encoding: .utf8)
         } catch {
-            throw MCPError.internalError("Failed to read SwiftFileList \(path): \(error)")
+            throw MCPError.toolExecutionFailed("Failed to read SwiftFileList \(path): \(error)")
         }
         return raw
             .split(whereSeparator: \.isNewline)

@@ -192,4 +192,43 @@ struct XcodebuildResolverIntegrationTests {
         let stderr = result.compilerStderr ?? ""
         #expect(stderr.contains("error:") == false)
     }
+
+    /// Per PLAN §0.3, compiler diagnostics on the user's own Swift code are part of
+    /// the analysis output, not a tool-execution error. The resolver must therefore
+    /// keep going when xcodebuild's build action fails because the target's sources
+    /// don't compile — xcodebuild still materializes the SwiftFileList before the
+    /// compile step, and downstream swiftc will surface the same error as a
+    /// diagnostic the tool returns to the caller.
+    @Test
+    func resolverContinuesWhenTargetSourcesFailToCompile() async throws {
+        let resolver = XcodebuildResolver()
+        let resolved = try await resolver.resolveArgs(for: .xcodeProject(
+            path: fixturePath("BrokenProject.xcodeproj"),
+            targetName: "Broken",
+            configuration: nil,
+            target: nil
+        ))
+        #expect(resolved.moduleName == "Broken")
+        #expect(resolved.inputFiles.count == 1)
+        #expect(resolved.inputFiles.first?.hasSuffix("/Broken.swift") == true)
+    }
+
+    @Test
+    func compileStatsSurfacesCompilerErrorAsDiagnostic() async throws {
+        let tool = CompileStatsTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "input": .object([
+                "project": .string(fixturePath("BrokenProject.xcodeproj")),
+                "target_name": .string("Broken")
+            ])
+        ]))
+
+        // Tool must succeed structurally — diagnostics are the analysis output.
+        #expect(response.isError == false)
+        let result = try decodeResult(CompileStatsTool.Result.self, response)
+        // swiftc fails to type-check the broken source, surfaced as compilerExitCode.
+        #expect(result.compilerExitCode != 0)
+        let stderr = result.compilerStderr ?? ""
+        #expect(stderr.contains("error:"))
+    }
 }
