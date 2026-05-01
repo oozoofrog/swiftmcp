@@ -471,12 +471,13 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 3. ✓ `Tools/ReportMissingSymbols.swift` — `swiftc -typecheck` + `swiftc -dump-ast` 병렬 호출 → 분류 + AST cross-check. `kind == .module`은 cross-check 면제 (import_decl이 unresolved 모듈에도 declared로 잡혀 false positive 마스킹 위험).
 4. ✓ `Tools/SuggestStubs.swift` — usagePattern별 휴리스틱(call → `func X(_ a0: Any, _ a1: Any) -> Any { fatalError() }` 인자 개수 추론, type → `struct X { public init() {} }`, member → `var X: Any`, 그 외 → `let X: Any`). `missing_symbols` 인자 미제공 시 자체 typecheck 실행.
 5. ✓ Mcpswx에 두 도구 등록 (12 → 12 도구로 변경 — 새 2개 추가, 합 12 도구). 정정: 8개 분석 도구 + `print_target_info`/`build_isolated_snippet` + `report_missing_symbols`/`suggest_stubs` = 12.
-6. ✓ 단위 테스트 16건(MissingSymbolClassifier 9 + ASTIdentifierExtractor 7) + 통합 9건(ReportMissingSymbols 4 + SuggestStubs 5, e2e report→suggest→build 1건 포함).
+6. ✓ 단위 테스트 16건(MissingSymbolClassifier 9 + ASTIdentifierExtractor 7) + 통합 11건(ReportMissingSymbols 4 + SuggestStubs 7, e2e report→suggest→build 1건 + falsePositive skipped 검증 2건 포함).
 
 학습 사항:
 - **`-dump-ast` 출력 채널**: AST는 stdout, 진단은 stderr. probe 초기에 `2>&1`로 합쳐 보다가 stderr에서 AST를 읽도록 잘못 구현했다가 단위/통합 테스트가 잡아냈음.
 - **`import_decl`은 declaration이지만 resolution이 아님**: 모듈을 못 찾아도 `(import_decl module="X")` 노드는 emit. AST cross-check를 module kind에 적용하면 unresolved 모듈을 false positive로 마스킹 → classifier에서 module kind에는 cross-check 면제.
 - **AST 텍스트 정규식의 안정성**: 핵심 노드(parameter/pattern_named/func_decl/struct_decl/class_decl/enum_decl/protocol_decl/typealias_decl/import_decl)는 Swift 6.x 내내 안정적. toolchain 업그레이드 시 sample AST 텍스트로 회귀 모니터링.
+- **falsePositive 처리는 두 진입점 모두에서 일관되게**: `suggest_stubs`가 외부에서 받은 `missing_symbols`와 자체 도출한 리스트 두 경로 모두 falsePositive를 *skipped*로 분류해야 한다 (Codex stop-time review 지적). 외부 리스트만 그대로 통과시키면, 사용자가 `report_missing_symbols` 출력을 그대로 넘겼을 때 false-positive 마킹이 무시되어 잘못된 stub이 만들어진다. `StubBuilder.buildStubs`가 falsePositive 분기를 가장 먼저 처리.
 
 후속 마일스톤(Stage 4-2): `slice_function` — 큰 파일에서 함수 1개 + 의존 정의만 추출하는 슬라이싱. 도입 시점은 별도 plan으로 결정.
 

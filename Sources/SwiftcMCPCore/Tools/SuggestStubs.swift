@@ -90,9 +90,12 @@ public struct SuggestStubsTool: MCPTool {
         let toolchainMeta: ToolOutputMeta.Toolchain
 
         if let inline = dict["missing_symbols"], case .array = inline {
+            // Caller-supplied list. We do NOT silently drop falsePositive entries —
+            // they must surface in `skipped` so the caller learns we ignored them
+            // (otherwise the LLM might think `suggest_stubs` covered every symbol it
+            // passed in). Same end-result as the self-derived path below.
             missingSymbols = try decodeMissingSymbols(inline)
             resolvedFromCompiler = false
-            // No swiftc call — fill toolchain meta from the resolver only.
             let resolved = try await toolchain.resolve()
             toolchainMeta = .init(path: resolved.swiftcPath, version: resolved.version)
         } else {
@@ -123,7 +126,10 @@ public struct SuggestStubsTool: MCPTool {
                 sourceCode: code,
                 declaredIdentifiers: declared
             )
-            missingSymbols = classification.symbols.filter { !$0.falsePositive }
+            // Self-derived path also goes through StubBuilder so falsePositive
+            // entries land in `skipped` with a uniform reason (instead of being
+            // silently filtered out before the builder ever sees them).
+            missingSymbols = classification.symbols
             resolvedFromCompiler = true
             toolchainMeta = .init(
                 path: typecheck.toolchain.swiftcPath,
@@ -175,6 +181,17 @@ enum StubBuilder {
         var stubs: [SuggestStubsTool.StubSuggestion] = []
         var skipped: [SuggestStubsTool.SkippedSymbol] = []
         for symbol in symbols {
+            // falsePositive shadows kind: classifier already saw the name in the AST's
+            // declared pool, so generating a stub would shadow a real declaration.
+            // Surface the symbol in `skipped` so the caller knows we saw it.
+            if symbol.falsePositive {
+                skipped.append(.init(
+                    name: symbol.name,
+                    kind: symbol.kind,
+                    reason: "name is already declared elsewhere in the snippet (likely a typo); refusing to stub"
+                ))
+                continue
+            }
             switch symbol.kind {
             case .module:
                 skipped.append(.init(
