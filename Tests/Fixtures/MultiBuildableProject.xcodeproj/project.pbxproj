@@ -1,0 +1,221 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 55;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		L0001 /* Lib.swift in Sources */ = {isa = PBXBuildFile; fileRef = L0002 /* Lib.swift */; };
+		A0001 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0002 /* App.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		L0002 /* Lib.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lib.swift; sourceTree = "<group>"; };
+		L0003 /* libLib.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLib.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0002 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		A0003 /* libApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libApp.a; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		G0010 = {
+			isa = PBXGroup;
+			children = (
+				G0011 /* Lib */,
+				G0012 /* App */,
+				G0013 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G0011 /* Lib */ = {
+			isa = PBXGroup;
+			children = (
+				L0002 /* Lib.swift */,
+			);
+			path = MultiBuildableProject/Sources/Lib;
+			sourceTree = "<group>";
+		};
+		G0012 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A0002 /* App.swift */,
+			);
+			path = MultiBuildableProject/Sources/App;
+			sourceTree = "<group>";
+		};
+		G0013 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				L0003 /* libLib.a */,
+				A0003 /* libApp.a */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		L0020 /* Lib */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L0030 /* Build configuration list for PBXNativeTarget "Lib" */;
+			buildPhases = (
+				L0040 /* Sources */,
+			);
+			dependencies = (
+			);
+			name = Lib;
+			productName = Lib;
+			productReference = L0003 /* libLib.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+		A0020 /* App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0030 /* Build configuration list for PBXNativeTarget "App" */;
+			buildPhases = (
+				A0040 /* Sources */,
+			);
+			dependencies = (
+			);
+			name = App;
+			productName = App;
+			productReference = A0003 /* libApp.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXSourcesBuildPhase section */
+		L0040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				L0001 /* Lib.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0001 /* App.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXProject section */
+		P0050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = P0060 /* Build configuration list for PBXProject "MultiBuildableProject" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = G0010;
+			productRefGroup = G0013 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				L0020 /* Lib */,
+				A0020 /* App */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCConfigurationList section */
+		L0030 /* Build configuration list for PBXNativeTarget "Lib" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				L0031 /* Debug */,
+				L0032 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A0030 /* Build configuration list for PBXNativeTarget "App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0031 /* Debug */,
+				A0032 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		P0060 /* Build configuration list for PBXProject "MultiBuildableProject" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				P0061 /* Debug */,
+				P0062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCBuildConfiguration section */
+		L0031 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Lib;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Debug;
+		};
+		L0032 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Lib;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Release;
+		};
+		A0031 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = App;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Debug;
+		};
+		A0032 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = App;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Release;
+		};
+		P0061 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ONLY_ACTIVE_ARCH = YES;
+			};
+			name = Debug;
+		};
+		P0062 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+	};
+	rootObject = P0050 /* Project object */;
+}

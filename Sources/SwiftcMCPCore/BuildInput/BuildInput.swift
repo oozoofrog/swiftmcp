@@ -28,6 +28,7 @@ public enum BuildInput: Sendable, Equatable {
     case xcodeWorkspace(
         path: String,
         scheme: String,
+        targetName: String? = nil,
         configuration: String? = nil,
         target: String? = nil
     )
@@ -116,10 +117,12 @@ public enum BuildInput: Sendable, Equatable {
             guard let scheme = dict["scheme"]?.asString, !scheme.isEmpty else {
                 throw MCPError.invalidParams("`input.scheme` is required for `input.workspace`")
             }
+            let targetName = dict["target_name"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
             let configuration = dict["configuration"]?.asString.flatMap { $0.isEmpty ? nil : $0 }
             return .xcodeWorkspace(
                 path: path,
                 scheme: scheme,
+                targetName: targetName,
                 configuration: configuration,
                 target: target
             )
@@ -136,7 +139,7 @@ public enum BuildInput: Sendable, Equatable {
         case .directory(_, _, let target, _): return target
         case .swiftPMPackage(_, _, _, let target): return target
         case .xcodeProject(_, _, _, let target): return target
-        case .xcodeWorkspace(_, _, _, let target): return target
+        case .xcodeWorkspace(_, _, _, _, let target): return target
         }
     }
 
@@ -183,7 +186,7 @@ public enum BuildInput: Sendable, Equatable {
             ]),
             "target_name": .object([
                 "type": .string("string"),
-                "description": .string("SwiftPM target to analyze. Required when the package has multiple library targets; defaults to the first library target otherwise.")
+                "description": .string("Target to analyze. For SwiftPM packages, required when the package has multiple library targets; defaults to the first library target otherwise. For Xcode projects, required (the `project` case must name the target). For workspaces, optional but required when the chosen `scheme` builds multiple targets — disambiguates which target's SwiftFileList to read.")
             ]),
             "configuration": .object([
                 "type": .string("string"),

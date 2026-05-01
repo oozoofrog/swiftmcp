@@ -79,11 +79,12 @@ struct BuildInputXcodeWorkspaceDecodingTests {
             "scheme": .string("Sample")
         ])
         let input = try BuildInput.decode(value)
-        guard case .xcodeWorkspace(let path, let scheme, let configuration, let target) = input else {
+        guard case .xcodeWorkspace(let path, let scheme, let targetName, let configuration, let target) = input else {
             Issue.record("expected .xcodeWorkspace"); return
         }
         #expect(path == "/abs/Some.xcworkspace")
         #expect(scheme == "Sample")
+        #expect(targetName == nil)
         #expect(configuration == nil)
         #expect(target == nil)
     }
@@ -93,15 +94,17 @@ struct BuildInputXcodeWorkspaceDecodingTests {
         let value = JSONValue.object([
             "workspace": .string("/abs/X.xcworkspace"),
             "scheme": .string("App"),
+            "target_name": .string("App"),
             "configuration": .string("Release"),
             "target": .string("arm64-apple-macos14")
         ])
         let input = try BuildInput.decode(value)
-        guard case .xcodeWorkspace(let path, let scheme, let configuration, let target) = input else {
+        guard case .xcodeWorkspace(let path, let scheme, let targetName, let configuration, let target) = input else {
             Issue.record("expected .xcodeWorkspace"); return
         }
         #expect(path == "/abs/X.xcworkspace")
         #expect(scheme == "App")
+        #expect(targetName == "App")
         #expect(configuration == "Release")
         #expect(target == "arm64-apple-macos14")
     }
@@ -205,6 +208,76 @@ struct XcodebuildResolverWorkspaceIntegrationTests {
         let stderr = result.compilerStderr ?? ""
         #expect(stderr.contains("error:") == false)
     }
+
+    /// Per Codex stop-time review: a workspace whose scheme builds multiple targets
+    /// (e.g. an explicit shared scheme with two BuildableReference entries) emits
+    /// per-target settings blocks from `xcodebuild -showBuildSettings`. Picking the
+    /// last block — the previous behavior — silently returned the wrong target's
+    /// SwiftFileList. The resolver must now refuse without `target_name` and pick
+    /// the correct block when one is supplied.
+    @Test
+    func multiBuildableSchemeRefusesWithoutTargetName() async throws {
+        let resolver = XcodebuildResolver()
+        do {
+            _ = try await resolver.resolveArgs(for: .xcodeWorkspace(
+                path: fixturePath("MultiBuildableWorkspace.xcworkspace"),
+                scheme: "All",
+                targetName: nil,
+                configuration: nil,
+                target: nil
+            ))
+            Issue.record("expected throw")
+        } catch let error as MCPError {
+            guard case .invalidParams(let message) = error else {
+                Issue.record("expected invalidParams, got \(error)"); return
+            }
+            #expect(message.contains("target_name"))
+            #expect(message.contains("Lib") || message.contains("App"))
+        }
+    }
+
+    @Test
+    func multiBuildableSchemeSelectsTargetByExplicitName() async throws {
+        let resolver = XcodebuildResolver()
+        let resolvedLib = try await resolver.resolveArgs(for: .xcodeWorkspace(
+            path: fixturePath("MultiBuildableWorkspace.xcworkspace"),
+            scheme: "All",
+            targetName: "Lib",
+            configuration: nil,
+            target: nil
+        ))
+        #expect(resolvedLib.moduleName == "Lib")
+        #expect(resolvedLib.inputFiles.first?.hasSuffix("/Lib.swift") == true)
+
+        let resolvedApp = try await resolver.resolveArgs(for: .xcodeWorkspace(
+            path: fixturePath("MultiBuildableWorkspace.xcworkspace"),
+            scheme: "All",
+            targetName: "App",
+            configuration: nil,
+            target: nil
+        ))
+        #expect(resolvedApp.moduleName == "App")
+        #expect(resolvedApp.inputFiles.first?.hasSuffix("/App.swift") == true)
+
+        // Sanity: Lib and App resolve to *different* SwiftFileLists. Without the
+        // target-aware parser they would have collapsed to the same path (the last
+        // block xcodebuild emitted).
+        #expect(resolvedLib.inputFiles != resolvedApp.inputFiles)
+    }
+
+    @Test
+    func multiBuildableSchemeRejectsUnknownTargetName() async throws {
+        let resolver = XcodebuildResolver()
+        await #expect(throws: MCPError.self) {
+            _ = try await resolver.resolveArgs(for: .xcodeWorkspace(
+                path: fixturePath("MultiBuildableWorkspace.xcworkspace"),
+                scheme: "All",
+                targetName: "NoSuchTarget",
+                configuration: nil,
+                target: nil
+            ))
+        }
+    }
 }
 
 @Suite("XcodebuildResolver unit")
@@ -221,7 +294,10 @@ struct XcodebuildResolverUnitTests {
             PRODUCT_NAME = Sample
             FRAMEWORK_SEARCH_PATHS = /a /b
         """
-        let parsed = resolver.parseBuildSettings(sample)
+        let blocks = resolver.parseBuildSettings(sample)
+        #expect(blocks.count == 1)
+        let parsed = blocks[0].settings
+        #expect(blocks[0].target == "Sample")
         #expect(parsed["ARCHS"] == "arm64")
         #expect(parsed["SDKROOT"] == "/Developer/Platforms/MacOSX.sdk")
         #expect(parsed["SWIFT_VERSION"] == "6.0")
@@ -232,16 +308,74 @@ struct XcodebuildResolverUnitTests {
     @Test
     func parseBuildSettingsIgnoresHeaderAndBlankLines() {
         let resolver = XcodebuildResolver()
-        let parsed = resolver.parseBuildSettings("""
+        let blocks = resolver.parseBuildSettings("""
         Build settings for action build and target Sample:
 
             KEY = value
         not a build setting line
             ANOTHER = thing
         """)
+        #expect(blocks.count == 1)
+        let parsed = blocks[0].settings
         #expect(parsed["KEY"] == "value")
         #expect(parsed["ANOTHER"] == "thing")
         #expect(parsed["Build settings for action build and target Sample"] == nil)
+    }
+
+    @Test
+    func parseBuildSettingsSplitsMultipleTargetBlocks() {
+        let resolver = XcodebuildResolver()
+        let blocks = resolver.parseBuildSettings("""
+        Build settings for action build and target Lib:
+            TARGET_NAME = Lib
+            SWIFT_RESPONSE_FILE_PATH_normal_arm64 = /tmp/Lib.SwiftFileList
+        Build settings for action build and target App:
+            TARGET_NAME = App
+            SWIFT_RESPONSE_FILE_PATH_normal_arm64 = /tmp/App.SwiftFileList
+        """)
+        #expect(blocks.count == 2)
+        #expect(blocks[0].target == "Lib")
+        #expect(blocks[0].settings["SWIFT_RESPONSE_FILE_PATH_normal_arm64"] == "/tmp/Lib.SwiftFileList")
+        #expect(blocks[1].target == "App")
+        #expect(blocks[1].settings["SWIFT_RESPONSE_FILE_PATH_normal_arm64"] == "/tmp/App.SwiftFileList")
+    }
+
+    @Test
+    func chooseSettingsBlockRequiresTargetNameForMultiTarget() throws {
+        let resolver = XcodebuildResolver()
+        let blocks: [XcodebuildResolver.SettingsBlock] = [
+            .init(target: "Lib", settings: ["TARGET_NAME": "Lib"]),
+            .init(target: "App", settings: ["TARGET_NAME": "App"])
+        ]
+        // Single block (project mode) — accepted regardless of explicitTargetName.
+        _ = try resolver.chooseSettingsBlock(
+            blocks: [blocks[0]],
+            explicitTargetName: nil,
+            identifier: "target 'Lib'"
+        )
+        // Multi block + no name → invalidParams.
+        #expect(throws: MCPError.self) {
+            _ = try resolver.chooseSettingsBlock(
+                blocks: blocks,
+                explicitTargetName: nil,
+                identifier: "scheme 'All'"
+            )
+        }
+        // Multi block + matching name → that block.
+        let chosen = try resolver.chooseSettingsBlock(
+            blocks: blocks,
+            explicitTargetName: "App",
+            identifier: "scheme 'All'"
+        )
+        #expect(chosen.target == "App")
+        // Multi block + unknown name → invalidParams.
+        #expect(throws: MCPError.self) {
+            _ = try resolver.chooseSettingsBlock(
+                blocks: blocks,
+                explicitTargetName: "Missing",
+                identifier: "scheme 'All'"
+            )
+        }
     }
 
     @Test

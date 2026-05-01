@@ -27,6 +27,7 @@ public struct XcodebuildResolver: BuildArgsResolver {
         let mode: Mode
         let configuration: String?
         let triple: String?
+        let explicitTargetName: String?
         let identifier: String  // user-facing label for error messages
         switch input {
         case .xcodeProject(let path, let targetName, let cfg, let target):
@@ -35,13 +36,18 @@ public struct XcodebuildResolver: BuildArgsResolver {
             mode = .project(path: absolute, target: targetName)
             configuration = cfg
             triple = target
+            // For project mode `xcodebuild -target X` already restricts the output to
+            // that target, but we still pass the name through for ambiguity tie-break
+            // in case the scheme attached to the project also builds peers.
+            explicitTargetName = targetName
             identifier = "target '\(targetName)'"
-        case .xcodeWorkspace(let path, let scheme, let cfg, let target):
+        case .xcodeWorkspace(let path, let scheme, let targetName, let cfg, let target):
             let absolute = absolutize(path)
             try ensureXcodeWorkspace(absolute)
             mode = .workspace(path: absolute, scheme: scheme)
             configuration = cfg
             triple = target
+            explicitTargetName = targetName
             identifier = "scheme '\(scheme)'"
         default:
             throw MCPError.internalError("XcodebuildResolver received non-Xcode input")
@@ -67,11 +73,18 @@ public struct XcodebuildResolver: BuildArgsResolver {
             overrides: overrides
         )
 
-        let settings = try await readBuildSettings(
+        let blocks = try await readBuildSettings(
             mode: mode,
             configuration: resolvedConfig,
             overrides: overrides
         )
+
+        let chosen = try chooseSettingsBlock(
+            blocks: blocks,
+            explicitTargetName: explicitTargetName,
+            identifier: identifier
+        )
+        let settings = chosen.settings
 
         let fileListKey = "SWIFT_RESPONSE_FILE_PATH_normal_\(hostArch)"
         guard let fileListPath = settings[fileListKey], !fileListPath.isEmpty else {
@@ -89,7 +102,7 @@ public struct XcodebuildResolver: BuildArgsResolver {
         let fallbackModuleName: String
         switch mode {
         case .project(_, let targetName): fallbackModuleName = targetName
-        case .workspace(_, let scheme): fallbackModuleName = scheme
+        case .workspace(_, let scheme): fallbackModuleName = chosen.target ?? scheme
         }
         let moduleName = settings["PRODUCT_MODULE_NAME"]
             ?? settings["PRODUCT_NAME"]
@@ -111,6 +124,45 @@ public struct XcodebuildResolver: BuildArgsResolver {
             searchPaths: [],
             frameworkSearchPaths: [],
             extraSwiftcArgs: extraSwiftcArgs
+        )
+    }
+
+    /// `xcodebuild -showBuildSettings` emits one block per build target. With
+    /// `-project X -target Y` only Y's block appears, so the choice is unambiguous.
+    /// With `-workspace X -scheme Y`, however, a multi-buildable scheme prints one
+    /// block per buildable target — picking arbitrarily would silently return the
+    /// wrong SwiftFileList. Resolution rules:
+    /// - 0 blocks → tool execution error (xcodebuild emitted nothing usable).
+    /// - 1 block → use it, with or without an explicit target_name.
+    /// - N blocks + explicit target_name → match by `TARGET_NAME` (or the parsed
+    ///   header). Throw `invalidParams` on miss with the available names listed.
+    /// - N blocks + no target_name → throw `invalidParams` asking for one.
+    func chooseSettingsBlock(
+        blocks: [SettingsBlock],
+        explicitTargetName: String?,
+        identifier: String
+    ) throws -> SettingsBlock {
+        guard !blocks.isEmpty else {
+            throw MCPError.toolExecutionFailed(
+                "xcodebuild produced no build-settings blocks for \(identifier)."
+            )
+        }
+        if blocks.count == 1 {
+            // Single block — even if explicitTargetName disagrees with TARGET_NAME, we
+            // accept it; the caller's `-target X` already steered xcodebuild here.
+            return blocks[0]
+        }
+        let availableNames = blocks.compactMap { $0.target ?? $0.settings["TARGET_NAME"] }
+        guard let name = explicitTargetName else {
+            throw MCPError.invalidParams(
+                "\(identifier) builds multiple targets (\(availableNames.joined(separator: ", "))). Specify `target_name` to disambiguate."
+            )
+        }
+        if let match = blocks.first(where: { ($0.target ?? $0.settings["TARGET_NAME"]) == name }) {
+            return match
+        }
+        throw MCPError.invalidParams(
+            "target '\(name)' is not built by \(identifier) (available: \(availableNames.joined(separator: ", ")))"
         )
     }
 
@@ -158,7 +210,7 @@ public struct XcodebuildResolver: BuildArgsResolver {
         mode: Mode,
         configuration: String,
         overrides: [String]
-    ) async throws -> [String: String] {
+    ) async throws -> [SettingsBlock] {
         var arguments: [String] = []
         arguments.append(contentsOf: mode.selectorArgs)
         arguments.append(contentsOf: ["-configuration", configuration, "-showBuildSettings"])
@@ -177,32 +229,113 @@ public struct XcodebuildResolver: BuildArgsResolver {
         return parseBuildSettings(result.standardOutput)
     }
 
-    /// Parse xcodebuild -showBuildSettings stdout. Lines we care about look like
-    /// `    KEY = VALUE` (4 spaces of indent, exactly one ` = ` separator). Other
-    /// lines (empty, headers like `Build settings for action build and target X:`)
-    /// are ignored.
-    func parseBuildSettings(_ text: String) -> [String: String] {
-        var out: [String: String] = [:]
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            // Trim leading whitespace; xcodebuild uses 4 spaces, but be lenient.
+    /// One block of build settings from `xcodebuild -showBuildSettings` — output
+    /// is grouped by target via `Build settings for action … and target X:` headers
+    /// when xcodebuild builds more than one target (e.g. multi-buildable schemes).
+    struct SettingsBlock: Equatable {
+        let target: String?
+        let settings: [String: String]
+    }
+
+    /// Parse xcodebuild -showBuildSettings stdout into per-target blocks.
+    ///
+    /// xcodebuild emits two kinds of headers:
+    /// 1. `Build settings from command line:` — echoes the KEY=VALUE overrides we
+    ///    passed (e.g. `OBJROOT=…`, `ARCHS=…`). We discard these blocks; they aren't
+    ///    a real target's settings.
+    /// 2. `Build settings for action <action> and target <name>:` — a real target's
+    ///    resolved settings. These become entries in the returned array.
+    ///
+    /// Lines without a recognized header that contain `KEY = VALUE` belong to the
+    /// most recently opened block. Anything else (blank lines, command echoes) is
+    /// ignored.
+    func parseBuildSettings(_ text: String) -> [SettingsBlock] {
+        var blocks: [SettingsBlock] = []
+        var currentTarget: String? = nil
+        var currentSettings: [String: String] = [:]
+        var inDiscardableBlock = false
+        var hasOpenBlock = false
+
+        func flush() {
+            if hasOpenBlock && !inDiscardableBlock {
+                blocks.append(SettingsBlock(target: currentTarget, settings: currentSettings))
+            }
+            currentTarget = nil
+            currentSettings = [:]
+            inDiscardableBlock = false
+            hasOpenBlock = false
+        }
+
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+
+            switch classifyHeader(line: line) {
+            case .targetSettings(let name):
+                flush()
+                currentTarget = name
+                currentSettings = [:]
+                inDiscardableBlock = false
+                hasOpenBlock = true
+                continue
+            case .commandLineEcho:
+                flush()
+                currentTarget = nil
+                currentSettings = [:]
+                inDiscardableBlock = true
+                hasOpenBlock = true
+                continue
+            case .none:
+                break
+            }
+
+            // KEY = VALUE inside the current block. xcodebuild indents these by 4
+            // spaces; be lenient about whitespace.
             var s = line
             while let first = s.first, first == " " || first == "\t" {
                 s.removeFirst()
             }
             guard let eq = s.range(of: " = ") else { continue }
             let key = String(s[..<eq.lowerBound])
-            // Build setting keys are identifiers — letters, digits, underscores. xcodebuild
-            // emits arch/variant-suffixed keys with lowercase parts (e.g.
-            // SWIFT_RESPONSE_FILE_PATH_normal_arm64), so we cannot restrict to uppercase.
             guard !key.isEmpty,
                   key.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" })
             else {
                 continue
             }
             let value = String(s[eq.upperBound...])
-            out[key] = value
+            // Open an implicit unnamed block when KEY=VALUE lines arrive before any
+            // header (very old xcodebuild emitted settings without a header for
+            // single-target invocations).
+            if !hasOpenBlock {
+                hasOpenBlock = true
+            }
+            if !inDiscardableBlock {
+                currentSettings[key] = value
+            }
         }
-        return out
+        flush()
+        return blocks
+    }
+
+    private enum HeaderKind {
+        case targetSettings(String)
+        case commandLineEcho
+        case none
+    }
+
+    private func classifyHeader(line: String) -> HeaderKind {
+        // Anchored at start (no leading whitespace allowed; xcodebuild's headers are
+        // flush-left).
+        if line == "Build settings from command line:" {
+            return .commandLineEcho
+        }
+        let prefix = "Build settings for action "
+        guard line.hasPrefix(prefix) else { return .none }
+        let rest = line.dropFirst(prefix.count)
+        guard let separator = rest.range(of: " and target ") else { return .none }
+        let after = rest[separator.upperBound...]
+        guard after.hasSuffix(":") else { return .none }
+        let target = after.dropLast()
+        return target.isEmpty ? .none : .targetSettings(String(target))
     }
 
     // MARK: - Helpers
