@@ -133,7 +133,10 @@ public struct XcodebuildResolver: BuildArgsResolver {
     /// block per buildable target — picking arbitrarily would silently return the
     /// wrong SwiftFileList. Resolution rules:
     /// - 0 blocks → tool execution error (xcodebuild emitted nothing usable).
-    /// - 1 block → use it, with or without an explicit target_name.
+    /// - 1 block + matching/absent `explicitTargetName` → use it.
+    /// - 1 block + mismatched `explicitTargetName` → reject. Ignoring the mismatch
+    ///   would silently analyze the wrong target while the caller believes they
+    ///   selected another.
     /// - N blocks + explicit target_name → match by `TARGET_NAME` (or the parsed
     ///   header). Throw `invalidParams` on miss with the available names listed.
     /// - N blocks + no target_name → throw `invalidParams` asking for one.
@@ -147,12 +150,19 @@ public struct XcodebuildResolver: BuildArgsResolver {
                 "xcodebuild produced no build-settings blocks for \(identifier)."
             )
         }
-        if blocks.count == 1 {
-            // Single block — even if explicitTargetName disagrees with TARGET_NAME, we
-            // accept it; the caller's `-target X` already steered xcodebuild here.
-            return blocks[0]
-        }
         let availableNames = blocks.compactMap { $0.target ?? $0.settings["TARGET_NAME"] }
+        if blocks.count == 1 {
+            let block = blocks[0]
+            if let name = explicitTargetName,
+               let actual = block.target ?? block.settings["TARGET_NAME"],
+               actual != name
+            {
+                throw MCPError.invalidParams(
+                    "target '\(name)' is not built by \(identifier) (available: \(actual))"
+                )
+            }
+            return block
+        }
         guard let name = explicitTargetName else {
             throw MCPError.invalidParams(
                 "\(identifier) builds multiple targets (\(availableNames.joined(separator: ", "))). Specify `target_name` to disambiguate."

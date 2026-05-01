@@ -278,6 +278,40 @@ struct XcodebuildResolverWorkspaceIntegrationTests {
             ))
         }
     }
+
+    /// Per Codex stop-time review: a single-target workspace must still validate the
+    /// caller's explicit `target_name`. If the user typoed (or asked for a target
+    /// that doesn't exist in this scheme) the resolver previously returned the
+    /// scheme's lone target's SwiftFileList silently — leading the analysis tool
+    /// to operate on the wrong code while the caller believes their selection took
+    /// effect.
+    @Test
+    func singleTargetWorkspaceRejectsMismatchedTargetName() async throws {
+        let resolver = XcodebuildResolver()
+        await #expect(throws: MCPError.self) {
+            _ = try await resolver.resolveArgs(for: .xcodeWorkspace(
+                path: fixturePath("SampleWorkspace.xcworkspace"),
+                scheme: "Sample",
+                targetName: "WrongName",
+                configuration: nil,
+                target: nil
+            ))
+        }
+    }
+
+    @Test
+    func singleTargetWorkspaceAcceptsMatchingTargetName() async throws {
+        let resolver = XcodebuildResolver()
+        let resolved = try await resolver.resolveArgs(for: .xcodeWorkspace(
+            path: fixturePath("SampleWorkspace.xcworkspace"),
+            scheme: "Sample",
+            targetName: "Sample",
+            configuration: nil,
+            target: nil
+        ))
+        #expect(resolved.moduleName == "Sample")
+        #expect(resolved.inputFiles.first?.hasSuffix("/Sample.swift") == true)
+    }
 }
 
 @Suite("XcodebuildResolver unit")
@@ -347,12 +381,26 @@ struct XcodebuildResolverUnitTests {
             .init(target: "Lib", settings: ["TARGET_NAME": "Lib"]),
             .init(target: "App", settings: ["TARGET_NAME": "App"])
         ]
-        // Single block (project mode) — accepted regardless of explicitTargetName.
+        // Single block (project mode) — accepted when no explicit name OR matching name.
         _ = try resolver.chooseSettingsBlock(
             blocks: [blocks[0]],
             explicitTargetName: nil,
             identifier: "target 'Lib'"
         )
+        _ = try resolver.chooseSettingsBlock(
+            blocks: [blocks[0]],
+            explicitTargetName: "Lib",
+            identifier: "target 'Lib'"
+        )
+        // Single block + mismatched name → invalidParams (silent miss would
+        // analyze the wrong target).
+        #expect(throws: MCPError.self) {
+            _ = try resolver.chooseSettingsBlock(
+                blocks: [blocks[0]],
+                explicitTargetName: "App",
+                identifier: "scheme 'Lib'"
+            )
+        }
         // Multi block + no name → invalidParams.
         #expect(throws: MCPError.self) {
             _ = try resolver.chooseSettingsBlock(

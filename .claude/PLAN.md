@@ -249,6 +249,8 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 
 **Codex stop-time review 두 번째 지적 반영 (target ambiguity)**: workspace + multi-buildable scheme(여러 BuildableReference를 가진 명시 scheme XML)에서 `xcodebuild -showBuildSettings`가 타깃별 settings 블록을 차례로 출력. 단순 덮어쓰기 파서는 *마지막* 블록의 SwiftFileList를 반환해 임의의 잘못된 타깃을 분석할 위험. 수정: (1) 파서를 target-aware로 변경 — 헤더 `Build settings for action … and target X:`로 블록 분리, `Build settings from command line:` 에코는 폐기 블록으로 분류. (2) `BuildInput.xcodeWorkspace`에 옵셔널 `targetName` 추가. (3) `chooseSettingsBlock`: 1 블록 → 사용, N 블록 + targetName 명시 → 매치, N 블록 + 미명시 → `invalidParams`로 명시 요청. (4) fixture `Tests/Fixtures/MultiBuildableProject.xcodeproj/xcshareddata/xcschemes/All.xcscheme`(Lib + App 둘 다 빌드)와 `Tests/Fixtures/MultiBuildableWorkspace.xcworkspace`. (5) `SettingsBlock` 단위 테스트 + multi-buildable scheme 통합 3건 (refuse-without-name, select-by-name, reject-unknown).
 
+**Codex stop-time review 세 번째 지적 반영 (single-target silent miss)**: `chooseSettingsBlock`의 단일 블록 fast-path가 명시된 `target_name`을 검증 없이 통과시켜 잘못된 이름이 silent하게 무시됨. 사용자가 `target_name: "Foo"`를 줬는데 워크스페이스 scheme이 실제로 `Bar`만 빌드하면, resolver가 `Bar`의 SwiftFileList를 반환하면서 사용자는 `Foo`를 분석했다고 잘못 가정. 수정: 단일 블록도 explicit target_name과 블록의 `TARGET_NAME` 일치 검증, 불일치 시 `invalidParams`로 throw. 단위 테스트에 single-target mismatch 케이스 + 통합 테스트 2건 추가 (`singleTargetWorkspaceRejectsMismatchedTargetName`, `singleTargetWorkspaceAcceptsMatchingTargetName`).
+
 부수적 수정 (실제 race condition 발견·수정): Stage 3.D/E의 병렬 xcodebuild 부하가 `BuildIsolatedSnippet cancellation` 테스트를 60초 wall-clock 타임아웃까지 대기하게 만들면서, `PIDHolder`의 race를 노출시켰다. 부하 시 `Task.detached`가 스케줄되기 전에 parent의 `task.cancel()`이 도달하면 `withTaskCancellationHandler.onCancel`이 `holder.get() == 0`을 보고 SIGTERM을 어디로도 보내지 못해 자식 프로세스가 자연 종료까지 60초를 대기하는 문제. 수정: `PIDHolder`에 sticky `cancelled` 플래그 + `markCancelled()` 메서드 추가. cancel이 set() 전에 도착해도 sticky flag가 기억되고, 다음 `set(pid)`가 즉시 SIGTERM을 보낸다. `onCancel`은 `markCancelled()`를 호출. 이로써 race window가 사라지고 cancellation 테스트의 5초 elapsed threshold가 부하 하에서도 안정적으로 통과.
 
 3.A/B/C/D 진행 중 학습된 사항 (PLAN 또는 CLAUDE.md에 정책으로 흡수할 후보):
@@ -269,6 +271,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **workspace의 auto-generated scheme**: `.xcworkspace`에 `xcshareddata/xcschemes/<Name>.xcscheme`이 commit되어 있지 않아도, 참조된 project의 default target(들)이 scheme으로 자동 노출된다(probe로 확인). fixture가 `contents.xcworkspacedata` 1개 파일로 충분한 이유.
 - **xcodebuild -showBuildSettings 헤더 두 종류**: `Build settings from command line:`(우리가 넘긴 KEY=VALUE 오버라이드 echo) + `Build settings for action <action> and target <name>:`(타깃 settings). 후자만 분석 대상. command-line echo를 잘못 분류하면 단일-타깃 호출이 multi-target처럼 보여 ambiguity 오류 발생 — 파서가 두 헤더를 모두 인식하고 echo 블록은 결과에서 제외해야 함.
 - **multi-buildable scheme의 target ambiguity**: `xcshareddata/xcschemes/<Name>.xcscheme`에 여러 `BuildableReference`가 있으면 `-scheme X -showBuildSettings`가 타깃별 블록을 차례로 출력. resolver는 1 블록일 때 그대로 사용, N 블록이면 명시적 `target_name` 요구. 자동 선택 시도(첫 블록/마지막 블록)는 임의적이라 회피.
+- **단일 블록도 명시 타깃은 검증해야 한다**: `chooseSettingsBlock`이 1 블록 fast-path에서 explicit `target_name`을 묵살하면, 사용자가 잘못된 이름을 줬을 때 silent하게 다른 타깃의 결과가 반환됨. 1 블록일 때도 명시 이름과 블록의 `TARGET_NAME`을 비교해 불일치 시 `invalidParams` throw가 필요. (Codex stop-time review 지적)
 
 #### 7.3.D — Xcode project 학습 사항 (체크리스트 form)
 - xcodebuild → SwiftFileList 채널 외 다른 입력 추출 경로는 Xcode 26에서 막힘 (`-dry-run` 제거, pbxproj 자체 파싱은 PLAN 정책상 회피).
@@ -424,7 +427,8 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 종료 조건:
 - ✓ workspace + scheme 단순 케이스 동작 (SampleWorkspace의 `Sample` scheme에 대해 compile_stats가 `compilerExitCode == 0` 반환).
 - ✓ multi-buildable scheme(`MultiBuildableProject`의 `All` scheme이 Lib + App 둘 다 빌드)에 대해 `target_name` 미지정 시 `invalidParams` throw, 명시 시 정확한 타깃의 SwiftFileList 반환.
-- ✓ `swift test` 155 tests / 32 suites 통과 (sync, no `--parallel`).
+- ✓ 단일 타깃 워크스페이스에 잘못된 `target_name` 명시 시 `invalidParams` throw (silent miss 방지).
+- ✓ `swift test` 157 tests / 32 suites 통과 (sync, no `--parallel`).
 
 ### 7.4 sub-stage별 종료 조건 공통
 
