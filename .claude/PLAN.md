@@ -459,10 +459,30 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - xcconfig 파일 직접 파싱 (xcodebuild가 처리).
 - BuildArgs 캐싱 정책.
 
-## 8. Stage 4+ (윤곽만)
+## 8. Stage 4+ (윤곽 + 1차 진행)
 
-- 격리 실행 고도화 — `build_isolated_snippet`을 다음 루프로 확장:
-  슬라이싱(`slice_function`) → stub 후보 자동 생성(`extract_with_stubs`) → 빌드 시도 → 누락 심볼 보고 → 클라이언트(LLM) stub 보강 → 재시도.
+### Stage 4-1 (완료) — 격리 실행 고도화: 누락 심볼 보고 + Stub 제안
+
+182 tests / 36 suites 통과. PLAN §8 격리 실행 루프의 5단계(슬라이싱 → stub 후보 자동 생성 → 빌드 시도 → 누락 심볼 보고 → 클라이언트 stub 보강 → 재시도) 중 *누락 심볼 보고 + stub 시작점 제안* 두 단계만 도구로 노출. 슬라이싱은 swift-syntax 없는 텍스트 AST 슬라이싱이 fragile해 후속(Stage 4-2)으로 이연.
+
+수행 작업:
+1. ✓ `Diagnostics/MissingSymbol.swift` — `MissingSymbol`(name/kind/locations/usagePattern/falsePositive) + `MissingSymbolClassifier`. 진단 메시지 정규식 4개(`cannot find '<x>' in scope`, `cannot find type '<x>' in scope`, `no such module '<x>'`, legacy `use of unresolved identifier '<x>'`).
+2. ✓ `Diagnostics/ASTIdentifierExtractor.swift` — `swiftc -dump-ast` stdout에서 declared identifier `Set<String>` 추출. 9개 정규식(parameter / pattern_named / func_decl 베이스 / struct_decl / class_decl / enum_decl / protocol_decl / typealias_decl / import_decl).
+3. ✓ `Tools/ReportMissingSymbols.swift` — `swiftc -typecheck` + `swiftc -dump-ast` 병렬 호출 → 분류 + AST cross-check. `kind == .module`은 cross-check 면제 (import_decl이 unresolved 모듈에도 declared로 잡혀 false positive 마스킹 위험).
+4. ✓ `Tools/SuggestStubs.swift` — usagePattern별 휴리스틱(call → `func X(_ a0: Any, _ a1: Any) -> Any { fatalError() }` 인자 개수 추론, type → `struct X { public init() {} }`, member → `var X: Any`, 그 외 → `let X: Any`). `missing_symbols` 인자 미제공 시 자체 typecheck 실행.
+5. ✓ Mcpswx에 두 도구 등록 (12 → 12 도구로 변경 — 새 2개 추가, 합 12 도구). 정정: 8개 분석 도구 + `print_target_info`/`build_isolated_snippet` + `report_missing_symbols`/`suggest_stubs` = 12.
+6. ✓ 단위 테스트 16건(MissingSymbolClassifier 9 + ASTIdentifierExtractor 7) + 통합 9건(ReportMissingSymbols 4 + SuggestStubs 5, e2e report→suggest→build 1건 포함).
+
+학습 사항:
+- **`-dump-ast` 출력 채널**: AST는 stdout, 진단은 stderr. probe 초기에 `2>&1`로 합쳐 보다가 stderr에서 AST를 읽도록 잘못 구현했다가 단위/통합 테스트가 잡아냈음.
+- **`import_decl`은 declaration이지만 resolution이 아님**: 모듈을 못 찾아도 `(import_decl module="X")` 노드는 emit. AST cross-check를 module kind에 적용하면 unresolved 모듈을 false positive로 마스킹 → classifier에서 module kind에는 cross-check 면제.
+- **AST 텍스트 정규식의 안정성**: 핵심 노드(parameter/pattern_named/func_decl/struct_decl/class_decl/enum_decl/protocol_decl/typealias_decl/import_decl)는 Swift 6.x 내내 안정적. toolchain 업그레이드 시 sample AST 텍스트로 회귀 모니터링.
+
+후속 마일스톤(Stage 4-2): `slice_function` — 큰 파일에서 함수 1개 + 의존 정의만 추출하는 슬라이싱. 도입 시점은 별도 plan으로 결정.
+
+### Stage 4 후속 후보 (윤곽만)
+
+- 격리 실행 고도화 후속 — `slice_function` 슬라이싱 (Stage 4-2).
 - API diff (`api_diff`) — `-compare-to-baseline-path` 사용.
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
 
