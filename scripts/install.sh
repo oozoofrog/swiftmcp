@@ -133,11 +133,16 @@ esac
 # silently otherwise so the script stays idempotent on hosts that don't
 # run Claude.
 if command -v claude >/dev/null 2>&1; then
-    # `claude mcp get <name>` exits 0 iff the server is registered in *any*
-    # scope. We use it as our existence probe (and it's much faster than
-    # `claude mcp list`, which runs a health check on every entry).
-    if claude mcp get swiftmcp >/dev/null 2>&1; then
-        log "Claude Code already has a 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove swiftmcp && claude mcp add -s user swiftmcp $INSTALL_PATH"
+    # We must check user scope specifically. `claude mcp get <name>` exits
+    # 0 if the server is registered in *any* scope (local/project/user),
+    # so a bare exit-code probe would skip user-scope registration even
+    # when the existing entry is project-local — defeating the whole
+    # reason we pass `-s user`. Parse the get output for the "Scope:
+    # User config" marker instead. Format example:
+    #     swiftmcp:
+    #       Scope: User config (available in all your projects)
+    if claude mcp get swiftmcp 2>/dev/null | grep -q '^  Scope: User config'; then
+        log "Claude Code already has a user-scoped 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove swiftmcp -s user && claude mcp add -s user swiftmcp $INSTALL_PATH"
     else
         log "registering with Claude Code (user scope)"
         if ! claude mcp add -s user swiftmcp "$INSTALL_PATH"; then
