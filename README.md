@@ -44,12 +44,11 @@ claude mcp add -s user swiftmcp /usr/local/bin/mcpswx
 
 ### Codex CLI
 
-Append to `~/.codex/config.toml` (create the file if it doesn't exist):
-
-```toml
-[mcp_servers.swiftmcp]
-command = "/usr/local/bin/mcpswx"
+```sh
+codex mcp add swiftmcp -- /usr/local/bin/mcpswx
 ```
+
+`codex mcp` owns the `[mcp_servers.<name>]` entries in `~/.codex/config.toml`; use `codex mcp list` to inspect and `codex mcp remove swiftmcp` to undo.
 
 ### Claude Desktop
 

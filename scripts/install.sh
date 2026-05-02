@@ -104,27 +104,22 @@ else
     log "claude CLI not found; register manually with: claude mcp add -s user swiftmcp $INSTALL_PATH"
 fi
 
-# Codex CLI uses ~/.codex/config.toml with [mcp_servers.<name>] sections.
-# The file may not exist yet (fresh Codex install); creating it is safe —
-# Codex tolerates an otherwise-empty config.toml. We append idempotently:
-# if a `[mcp_servers.swiftmcp]` header already lives in the file, skip;
-# otherwise append a fresh section pointing at $INSTALL_PATH. We don't
-# attempt to update an existing section's command field because a TOML
-# rewrite without a TOML parser is fragile; users who relocate the binary
-# can run the install again with the new INSTALL_DIR + delete the old
-# section, or edit the file directly.
-CODEX_CONFIG_DIR="$HOME/.codex"
-CODEX_CONFIG_PATH="$CODEX_CONFIG_DIR/config.toml"
-mkdir -p "$CODEX_CONFIG_DIR"
-if [ -f "$CODEX_CONFIG_PATH" ] && grep -q '^\[mcp_servers\.swiftmcp\]' "$CODEX_CONFIG_PATH"; then
-    log "Codex CLI config already has '[mcp_servers.swiftmcp]'; leaving it alone. Edit $CODEX_CONFIG_PATH if you need to point at a different binary."
+# Codex CLI ships its own `codex mcp add` subcommand that owns the
+# `[mcp_servers.<name>]` sections in ~/.codex/config.toml — preferred
+# over editing the TOML by hand because Codex parses + rewrites the
+# file safely. Idempotency: `codex mcp list` returns the registered
+# servers; if 'swiftmcp' is already there we leave it alone.
+if command -v codex >/dev/null 2>&1; then
+    if codex mcp list 2>/dev/null | grep -q '^swiftmcp\b'; then
+        log "Codex CLI already has a 'swiftmcp' entry; skipping registration. Re-register with: codex mcp remove swiftmcp && codex mcp add swiftmcp -- $INSTALL_PATH"
+    else
+        log "registering with Codex CLI"
+        if ! codex mcp add swiftmcp -- "$INSTALL_PATH"; then
+            log "codex mcp add failed; register manually: codex mcp add swiftmcp -- $INSTALL_PATH"
+        fi
+    fi
 else
-    log "registering with Codex CLI ($CODEX_CONFIG_PATH)"
-    cat >>"$CODEX_CONFIG_PATH" <<EOF
-
-[mcp_servers.swiftmcp]
-command = "$INSTALL_PATH"
-EOF
+    log "codex CLI not found; register manually with: codex mcp add swiftmcp -- $INSTALL_PATH"
 fi
 
 cat <<EOF
