@@ -202,7 +202,7 @@ public struct SliceFunctionTool: MCPTool {
 
         let verification = try await verify(
             slicedCode: slicedCode,
-            target: target
+            resolved: resolved
         )
 
         let included = graphOutput.closure.map { entry in
@@ -296,23 +296,30 @@ public struct SliceFunctionTool: MCPTool {
 
     private func verify(
         slicedCode: String,
-        target: String?
+        resolved: ResolvedBuildArgs
     ) async throws -> Verification {
         let scratch = try CallScratch()
         defer { scratch.dispose() }
         let sourceURL = try scratch.write(name: "slice.swift", contents: slicedCode)
 
+        // The verify pass must use the *same* search-path / framework / SDK
+        // environment swiftc had during the original dump. Otherwise a slice
+        // that legitimately keeps `import Core` (because the SwiftPM resolver
+        // returned only App's inputFiles, leaving Core as an external
+        // module) would fail typecheck with `no such module 'Core'` and
+        // surface as a false self-containment failure. We reuse the same
+        // `Options(resolved:)` channel `dump-ast` and api_diff use.
         async let typecheckOutcome = invocation.run(
             modeArgs: ["-typecheck"],
             inputFiles: [sourceURL.path],
             outputFile: nil,
-            options: .init(target: target)
+            options: .init(resolved: resolved)
         )
         async let dumpAstOutcome = invocation.run(
             modeArgs: ["-dump-ast"],
             inputFiles: [sourceURL.path],
             outputFile: nil,
-            options: .init(target: target)
+            options: .init(resolved: resolved)
         )
         let (typecheck, dumpAst) = try await (typecheckOutcome, dumpAstOutcome)
 
