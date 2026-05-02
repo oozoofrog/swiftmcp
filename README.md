@@ -4,22 +4,37 @@ A Model Context Protocol (MCP) server exposing Swift compiler capabilities to LL
 
 ## Install
 
-### One-line install (recommended)
+The installer covers build + copy + MCP-client registration in one shot. It auto-detects two scenarios:
+
+- **Remote** — piped from `curl`, no checkout in cwd. Shallow-clones into a temp dir and builds there.
+- **Local** — invoked from inside an existing checkout (`Package.swift` with the `mcpswx` target reachable by walking up from cwd). Builds the source tree as-is, no clone, picks up any uncommitted edits.
+
+### One-line install (remote)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | sh
 ```
 
-Clones into a temp directory, runs `swift build -c release`, copies `mcpswx` into `~/.local/bin/`, and (if the `claude` CLI is on `PATH`) auto-registers the server with Claude Code. Override the install destination or pin a specific ref:
+Builds, copies `mcpswx` into `~/.local/bin/`, and (if the `claude` / `codex` CLIs are on `PATH`) auto-registers the server. Override the destination or pin a specific ref:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | SWIFTMCP_REF=v0.1.0 sh
 ```
 
-Requires `swift`, `git`, and macOS. The script never invokes `sudo`; choose an `INSTALL_DIR` you can write to.
+Requires `swift`, `git` (remote mode only), and macOS. The script never invokes `sudo`; choose an `INSTALL_DIR` you can write to.
 
-### Manual install
+### From a local checkout
+
+```sh
+git clone git@github.com:oozoofrog/swiftmcp.git
+cd swiftmcp
+./scripts/install.sh
+```
+
+Same destinations and registration behavior as the remote one-liner. `INSTALL_DIR` overrides apply identically. Setting `SWIFTMCP_REF` or `SWIFTMCP_REPO` forces remote mode even from inside a checkout, which is useful for pinning a release tag without leaving your working directory.
+
+### Manual build
 
 ```sh
 git clone git@github.com:oozoofrog/swiftmcp.git
