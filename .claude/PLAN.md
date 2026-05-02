@@ -651,10 +651,21 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **macOS 26.x SWBBuildService contention은 integration 테스트의 결정성을 깨뜨림**: SampleProject self-build 통합 테스트가 idle 호스트에선 통과하나, 사용자 다른 xcodebuild(예: Papers test) 동시 실행 시 SDK-probe 단계(`ExecuteExternalTool clang`)에서 10분+ 멈춤. swift-testing의 `.disabled("…")` trait로 default skip 처리 + 깨끗한 환경에서 수동 실행하도록 메시지에 명시. 단위 테스트 19개로 기능 검증은 충분 (parser 결정성 + 입력 검증 + cancel 전파).
 - **xclogparser target 필터는 두 단계로 강화** (Codex 후속 지적): `type == "target"`만 보면 (a) 이름 없는 빈 wrapper 노드, (b) parent target 안에 중복 emit된 target wrapper, (c) `title`만 가진 비-target step이 모두 `targetTimings`에 phantom entry로 섞일 수 있음. 수정: `isRealTargetNode`이 `targetName` 비어있지 않거나 `title`이 `Build target ` prefix로 시작하는지 둘 중 하나를 추가 검증; target 발견 시 그 subSteps 재귀 중단 (자식은 task이지 nested target이 아님). 회귀 테스트 `ignoresNonTargetNodesAndNestedRewrappers`이 세 케이스 동시 검증.
 
+### Stage 4-2c (완료) — `slice_function` xcodeProject/xcodeWorkspace 입력
+
+277+ 테스트 / +1 통합 disabled. Stage 4-2b 후속의 직접 마무리. 1차 4-2b가 file/directory/swiftPMPackage만 받았던 것을 모든 BuildInput 케이스로 통일.
+
+수행 작업:
+1. ✓ `Tools/SliceFunction.swift::call(arguments:)`의 `case .xcodeProject, .xcodeWorkspace: throw …` 분기 제거. 모든 case가 동일 코드 path.
+2. ✓ 통합 테스트 1건 추가 (`slicesXcodeProjectFunction`): SampleProject(static lib, 단일 .swift, framework dep 없음) 슬라이스 → `sampleAdd` 함수가 includedSymbols에 + slicedCode에 verbatim + verify 통과. macOS 26 환경 contention 회피용으로 `.disabled` (Stage 4-5 통합 테스트와 동일 패턴).
+
+학습 사항:
+- **이 단계는 5라인 변경**: 코드 탐색 에이전트가 사전에 확인 — XcodebuildResolver가 이미 inputFiles + extraSwiftcArgs(-sdk + -swift-version)를 정상 반환하고, SliceFunctionTool은 dump-ast/verify 둘 다 `Options(resolved:)`로 옵션을 흘리고 있어, 거절 분기만 제거하면 즉시 동작. api_diff Stage 4-4b의 패턴과 동형.
+- **Stage 4-4b 후속(user framework deps) 관찰은 그대로 유효**: SampleProject은 dep 없는 static lib라 통과하지만, 사용자 프레임워크 의존을 가진 xcode 타깃에선 `frameworkSearchPaths`가 비어 있어 dump-ast/verify에서 `import UserFramework` 해석 실패 가능. 같은 후속 후보가 slice_function에도 적용된다.
+
 ### Stage 4 후속 후보 (윤곽만)
 
-- Stage 4-2b 후속: `slice_function`의 xcodeProject/xcodeWorkspace 입력 — Xcode가 결정한 inputFiles를 dump-ast에 그대로 흘리는 경로 + 환경 변수 검증.
-- Stage 4-4b 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → import 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
+- Stage 4-4b/4-2c 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → api_diff 및 slice_function의 dump/verify에서 `import UserFramework` 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 

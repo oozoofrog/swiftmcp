@@ -293,4 +293,33 @@ struct SliceFunctionTests {
         #expect(result.verification.compilerExitCode == 0)
         #expect(result.verification.unresolvedReferences.isEmpty)
     }
+
+    /// Stage 4-2c — xcode input acceptance. SampleProject is a static-lib
+    /// target (`Sample`) with one Swift file (`sampleAdd`, `SampleValue`)
+    /// and no framework deps, so the SDK that XcodebuildResolver threads
+    /// through `extraSwiftcArgs` is enough for both dump-ast and the
+    /// slice's self-typecheck.
+    ///
+    /// Disabled by default: macOS 26.x SWBBuildService contention on the
+    /// host stalls xcodebuild's SDK-probe phase indefinitely when any
+    /// concurrent xcodebuild is alive. Mirrors Stage 4-5's integration
+    /// test treatment — re-enable manually for one-off validation.
+    @Test(.disabled("xcodebuild SWBBuildService contention on macOS 26.x; run manually on idle host"))
+    func slicesXcodeProjectFunction() async throws {
+        let cache = CachedBuildArgsResolver(wrapping: DefaultBuildArgsResolver())
+        let tool = SliceFunctionTool(toolchain: ToolchainResolver(), resolver: cache)
+        let response = try await tool.call(arguments: .object([
+            "input": .object([
+                "project": .string(fixturePath("SampleProject.xcodeproj")),
+                "target_name": .string("Sample")
+            ]),
+            "function_name": .string("sampleAdd")
+        ]))
+        #expect(response.isError == false)
+        let result = try decodeResult(SliceFunctionTool.Result.self, response)
+        let names = Set(result.includedSymbols.map(\.name))
+        #expect(names.contains("sampleAdd"))
+        #expect(result.slicedCode.contains("public func sampleAdd"))
+        #expect(result.verification.compilerExitCode == 0)
+    }
 }

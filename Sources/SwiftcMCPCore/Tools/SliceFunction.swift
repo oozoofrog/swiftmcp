@@ -97,14 +97,15 @@ public struct SliceFunctionTool: MCPTool {
             throw MCPError.invalidParams("`function_name` is required and must be a non-empty string")
         }
         let input = try BuildInput.decode(dict["input"])
-        // xcode inputs are deferred — we don't yet have a tested path for
-        // dumping every Swift file Xcode wires into a target.
-        switch input {
-        case .file, .directory, .swiftPMPackage:
-            break
-        case .xcodeProject, .xcodeWorkspace:
-            throw MCPError.invalidParams("slice_function does not yet support xcodeProject / xcodeWorkspace inputs. File / directory / package cases are supported.")
-        }
+        // Every BuildInput case is accepted: file, directory, swiftPMPackage,
+        // xcodeProject, xcodeWorkspace. The xcode resolvers feed
+        // `swiftc -dump-ast` the same Swift sources Xcode would compile,
+        // and `Options(resolved:)` carries `-sdk`/`-swift-version` through
+        // for both the dump and the slice's verify pass — Apple framework
+        // imports preserved in a slice resolve under the resolver-supplied
+        // SDK. The Stage 4-4b 후속 caveat about empty `frameworkSearchPaths`
+        // for user-built framework deps still applies; it's recorded as a
+        // separate open item in PLAN §8 후속 후보.
         let includeImports = dict["include_imports"]?.asBool ?? true
 
         let resolved = try await resolver.resolveArgs(for: input)
