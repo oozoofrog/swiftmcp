@@ -209,10 +209,65 @@ public struct XcodebuildResolver: BuildArgsResolver {
         // materializes the SwiftFileList before swiftc's compile step, and the user's
         // analysis tool will surface the same diagnostics on its own swiftc call. Per
         // PLAN §0.3, compiler diagnostics are the analysis output, not a tool error.
+        //
+        // We bypass `runProcess` here for two related Xcode 26.2+ / macOS 26.x bugs
+        // (rdar // react-native-community/cli#2768):
+        //
+        //   1. xcodebuild's SWBBuildService child inherits the parent's stdout/stderr
+        //      file descriptors and keeps them open after `BUILD SUCCEEDED`. A
+        //      reader using `readDataToEndOfFile()` on those pipes never observes
+        //      EOF and blocks forever — even after we SIGTERM xcodebuild itself,
+        //      because the FD copy in SWBBuildService is still alive.
+        //   2. xcodebuild itself sometimes refuses to exit until SWBBuildService
+        //      lets go of the pipes, so `waitUntilExit()` also hangs.
+        //
+        // Routing stdio to `/dev/null` sidesteps (1) entirely — no reader, no
+        // block. The polling loop with SIGTERM/SIGKILL escalation handles (2) so
+        // the call returns within the timeout window even when xcodebuild is
+        // wedged. SwiftFileList is materialized well before BUILD SUCCEEDED, so
+        // the downstream existence check still differentiates "wedged but built"
+        // from "genuinely failed".
         do {
-            _ = try await runProcess(executable: "/usr/bin/xcodebuild", arguments: arguments)
+            try await runXcodebuildSilently(arguments: arguments, timeout: 300)
+        } catch let error as ProcessRunnerError {
+            switch error {
+            case .launchFailed(let message):
+                throw MCPError.toolExecutionFailed("xcodebuild build launch failed: \(message)")
+            }
+        }
+    }
+
+    /// xcodebuild build with stdio redirected to /dev/null and a wall-clock
+    /// timeout. We don't read xcodebuild's output here — the SwiftFileList
+    /// existence check downstream is what tells us if the build succeeded.
+    private func runXcodebuildSilently(arguments: [String], timeout: TimeInterval) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
         } catch {
-            throw MCPError.toolExecutionFailed("xcodebuild build launch failed: \(error)")
+            throw ProcessRunnerError.launchFailed("\(error)")
+        }
+        let pollInterval: TimeInterval = 0.05
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+        }
+        if process.isRunning {
+            process.terminate()
+            let graceDeadline = Date().addingTimeInterval(1.0)
+            while process.isRunning && Date() < graceDeadline {
+                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+            }
+            #if canImport(Darwin)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            #endif
+            process.waitUntilExit()
         }
     }
 

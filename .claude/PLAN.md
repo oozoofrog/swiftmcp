@@ -592,11 +592,26 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **swiftPMPackage 분석 대상 모듈은 resolver의 부산물이 아님** (Codex review 지적): SwiftPMPackageResolver는 *target_dependencies가 비어 있으면* `swift build`를 건너뜀 → searchPaths empty. api_diff가 `searchPaths.first`로 분석 대상 .swiftmodule을 찾으려 하면 dep-less 패키지(가장 흔한 케이스 SamplePackage)에서 즉시 실패. 수정: swiftPMPackage 케이스를 file/directory와 같은 코드 path로 통합 — `resolved.inputFiles`를 받아 `swiftc -emit-module` 직접 호출, `resolved.searchPaths`(있을 시)는 의존 모듈 import용 -I로 전달. resolver 부산물에 의존하지 않으므로 dep 유무 모두 동작.
 - **`-dump-sdk`도 의존 모듈 -I가 필요** (Codex 후속 지적): emit-module 단계만 의존 search path를 받고 dump-sdk는 우리가 새로 emit한 디렉토리만 받게 했더니, App→Core 같은 의존 패키지에서 dump-sdk가 `import Core`를 해석하지 못해 실패. swift-api-digester가 모듈 인터페이스를 로드할 때도 swiftc와 동일한 모듈 검색 환경이 필요한 것이 원인. 수정: `materializeModule`이 `MaterializedModule { moduleDir, dependencySearchPaths }`를 반환하고, `runDump`가 `includePaths: [String]`을 받아 모든 경로를 `-I`로 풀어 넘김. 회귀 테스트는 MultiTargetPackage `App` 타깃 self-diff로 의존 import가 dump 단계까지 살아남는지 검증.
 
+### Stage 4-4b (완료) — `api_diff` xcodeProject/xcodeWorkspace 입력 지원
+
+255 tests / 47 suites 통과. Stage 4-4의 1차 마일스톤에서 거절했던 두 case를 열었다. 별도 추출 로직은 필요 없었다 — `XcodebuildResolver`가 이미 `inputFiles + extraSwiftcArgs(-sdk + -swift-version)` 형태로 swiftc-ready output을 돌려주므로, file/directory/swiftPMPackage와 정확히 같은 `swiftc -emit-module` path를 재사용한다.
+
+수행 작업:
+1. ✓ `Tools/ApiDiff.swift::materializeModule`의 `switch input { case .file, .directory, .swiftPMPackage … case .xcodeProject, .xcodeWorkspace: throw … }` 분기 제거. 모든 case가 동일 코드 path 통과.
+2. ✓ 헤더 doc 갱신 — pipeline §1을 모든 BuildInput 지원으로 다시 씀.
+3. ✓ `MaterializedModule`을 `{ moduleDir, dependencySearchPaths, frameworkSearchPaths, sdkPath }`로 확장. `runDump`가 `-F <framework path>`와 `-sdk <SDKROOT>`를 함께 emit. SDK 경로는 `extraSwiftcArgs`에서 `-sdk` 토큰 다음 값을 직접 추출.
+4. ✓ `xcodeInputCurrentlyRejected` 단위 테스트를 `xcodeProjectSelfDiffsCleanly` 통합 테스트로 재작성. SampleProject(static lib, 단일 .swift, framework dep 없음) self-diff → 0 findings 검증. CachedBuildArgsResolver를 baseline/current 사이에 공유해 xcodebuild 호출 1회로 절감.
+
+학습 사항:
+- **XcodebuildResolver 출력은 swiftc-ready**: 1차 Stage 4-4에서 xcode 케이스를 deferred로 표시한 이유는 ".swiftmodule 위치 추출 probe 필요"였으나, 실제로 `.swiftmodule` 위치 자체는 *우리가 직접 emit*하므로 추출이 불필요했다. resolver는 Xcode가 결정한 inputFiles + SDK/Swift 버전만 알려주면 충분 — 나머지는 swiftPMPackage/file/directory와 동일하게 흘러간다. 1차 결정은 over-conservative.
+- **dump-sdk도 SDK/-F가 필요** (Codex 후속 지적): emit-module은 swiftc가 받는 모든 인자(-sdk, -F)를 그대로 받지만, swift-api-digester `-dump-sdk` 호출에 같은 인자를 안 넘기면 디지스터가 *기본 SDK*로 모듈 인터페이스를 로드 → Apple 프레임워크 import (UIKit/Foundation) 해석 실패하거나 SDK 버전 mismatch로 type lookup 실패. swift-api-digester는 `-sdk`, `-F`, `-Fsystem`, `-I`를 모두 받으므로 emit-module과 동일하게 그대로 전달. 같은 종류의 silent-miss 패턴이 dependencySearchPaths에서도 있었음 (Stage 4-4 첫 후속 fix와 동형).
+- **테스트에서 cachedResolver 공유**: `ApiDiffTool(toolchain:resolver:)`에 명시적으로 `CachedBuildArgsResolver`를 주입하면 baseline=current self-diff 테스트가 xcodebuild를 한 번만 실행 → CI 시간 절반. 프로덕션(Mcpswx)에서는 이미 cachedResolver가 주입돼 있으니 동일 입력 두 번에서도 자연스럽게 캐시 hit.
+
 ### Stage 4 후속 후보 (윤곽만)
 
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
 - Stage 4-2 후속: 디렉토리/모듈 입력 슬라이싱 (slice_function 현재는 file 단일).
-- Stage 4-4 후속: `api_diff`의 xcodeProject/xcodeWorkspace 입력 지원 — `.swiftmodule` 위치 추출 정확도 probe 필요.
+- Stage 4-4b 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → import 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 

@@ -5,11 +5,16 @@ import Foundation
 ///
 /// Pipeline:
 /// 1. Resolve `baseline` and `current` BuildInputs through `BuildArgsResolver`
-///    (file/directory/swiftPMPackage). xcodeProject/xcodeWorkspace are deferred.
+///    — every BuildInput case is supported. The resolver-specific build step
+///    (xcodebuild for xcodeProject/xcodeWorkspace, swift build for swiftPM
+///    when there are deps, none for plain file/directory) runs first.
 /// 2. For each side, materialize a `.swiftmodule` whose directory becomes the
-///    `-I` search path for swift-api-digester. file/directory inputs go through
-///    a fresh `swiftc -emit-module`; swiftPMPackage uses the modules folder the
-///    SwiftPM resolver already populated.
+///    `-I` search path for swift-api-digester. We always emit the module
+///    ourselves with `swiftc -emit-module` against `resolved.inputFiles`,
+///    threading the resolver's `target` / `searchPaths` /
+///    `frameworkSearchPaths` / `extraSwiftcArgs` through so xcode targets
+///    that need `-sdk <SDKROOT>` and `-swift-version <ver>` (which the
+///    Xcode resolver always provides) compile under the same code path.
 /// 3. `swift-api-digester -dump-sdk -module <Name> -I <dir> -o <persistent>/X.json`
 ///    twice — one per side.
 /// 4. `swift-api-digester -diagnose-sdk -input-paths a.json -input-paths b.json
@@ -116,6 +121,8 @@ public struct ApiDiffTool: MCPTool {
             digesterPath: digesterPath,
             moduleName: moduleName,
             includePaths: [baselineModule.moduleDir] + baselineModule.dependencySearchPaths,
+            frameworkSearchPaths: baselineModule.frameworkSearchPaths,
+            sdkPath: baselineModule.sdkPath,
             outputPath: baselineDumpPath,
             target: baseline.target
         )
@@ -123,6 +130,8 @@ public struct ApiDiffTool: MCPTool {
             digesterPath: digesterPath,
             moduleName: moduleName,
             includePaths: [currentModule.moduleDir] + currentModule.dependencySearchPaths,
+            frameworkSearchPaths: currentModule.frameworkSearchPaths,
+            sdkPath: currentModule.sdkPath,
             outputPath: currentDumpPath,
             target: current.target
         )
@@ -165,14 +174,25 @@ public struct ApiDiffTool: MCPTool {
 
     // MARK: - .swiftmodule materialization
 
-    /// What `materializeModule` returns: the directory holding the freshly
-    /// emitted `<moduleName>.swiftmodule`, plus any dependency-module search
-    /// paths the resolver supplied. swift-api-digester needs both via `-I`:
-    /// the first to load the analysis target, the rest to resolve `import`
-    /// statements that target peer modules in the same package.
+    /// What `materializeModule` returns: everything `swift-api-digester
+    /// -dump-sdk` needs to load the analysis target's interface in the same
+    /// environment swiftc compiled it under.
+    /// - `moduleDir`: holds the freshly emitted `<moduleName>.swiftmodule`.
+    /// - `dependencySearchPaths`: peer-module dirs from the resolver. Both
+    ///   `moduleDir` and these become `-I` flags so `import <PeerModule>`
+    ///   resolves at dump time.
+    /// - `frameworkSearchPaths`: from the resolver, become `-F` flags. Xcode
+    ///   targets that link against frameworks need this to load Apple +
+    ///   user-built frameworks.
+    /// - `sdkPath`: extracted from `resolved.extraSwiftcArgs[-sdk <path>]`.
+    ///   Without this swift-api-digester picks a default SDK that may
+    ///   mismatch the compile-time SDK; for Xcode targets it almost always
+    ///   does, surfacing as "cannot find type Foo in scope" during dump.
     private struct MaterializedModule {
         let moduleDir: String
         let dependencySearchPaths: [String]
+        let frameworkSearchPaths: [String]
+        let sdkPath: String?
     }
 
     /// Build the `.swiftmodule` for a BuildInput and return its directory
@@ -199,46 +219,55 @@ public struct ApiDiffTool: MCPTool {
         moduleName: String,
         scratch: PersistentScratch
     ) async throws -> MaterializedModule {
-        switch input {
-        case .file, .directory, .swiftPMPackage:
-            let resolved = try await resolver.resolveArgs(for: input)
-            guard !resolved.inputFiles.isEmpty else {
-                throw MCPError.toolExecutionFailed(
-                    "BuildArgsResolver returned no inputFiles for the given input; cannot build a `.swiftmodule` for api_diff."
-                )
-            }
-            let modulePath = scratch.directory.appending(
-                path: "\(moduleName).swiftmodule",
-                directoryHint: .notDirectory
-            )
-            let outcome = try await invocation.run(
-                modeArgs: ["-emit-module", "-emit-module-path", modulePath.path],
-                inputFiles: resolved.inputFiles,
-                outputFile: nil,
-                options: SwiftcInvocation.Options(
-                    target: resolved.target,
-                    optimization: nil,
-                    moduleName: moduleName,
-                    searchPaths: resolved.searchPaths,
-                    frameworkSearchPaths: resolved.frameworkSearchPaths,
-                    extraSwiftcArgs: resolved.extraSwiftcArgs
-                )
-            )
-            guard outcome.process.exitCode == 0 else {
-                throw MCPError.toolExecutionFailed(
-                    "swiftc -emit-module failed (exit=\(outcome.process.exitCode)) for module '\(moduleName)': \(truncate(outcome.process.standardError))"
-                )
-            }
-            return MaterializedModule(
-                moduleDir: scratch.directory.path,
-                dependencySearchPaths: resolved.searchPaths
-            )
-
-        case .xcodeProject, .xcodeWorkspace:
-            throw MCPError.invalidParams(
-                "api_diff currently supports `file`, `directory`, and `package` inputs. Xcode project / workspace support is deferred to a follow-up milestone."
+        let resolved = try await resolver.resolveArgs(for: input)
+        guard !resolved.inputFiles.isEmpty else {
+            throw MCPError.toolExecutionFailed(
+                "BuildArgsResolver returned no inputFiles for the given input; cannot build a `.swiftmodule` for api_diff."
             )
         }
+        let modulePath = scratch.directory.appending(
+            path: "\(moduleName).swiftmodule",
+            directoryHint: .notDirectory
+        )
+        let outcome = try await invocation.run(
+            modeArgs: ["-emit-module", "-emit-module-path", modulePath.path],
+            inputFiles: resolved.inputFiles,
+            outputFile: nil,
+            options: SwiftcInvocation.Options(
+                target: resolved.target,
+                optimization: nil,
+                moduleName: moduleName,
+                searchPaths: resolved.searchPaths,
+                frameworkSearchPaths: resolved.frameworkSearchPaths,
+                extraSwiftcArgs: resolved.extraSwiftcArgs
+            )
+        )
+        guard outcome.process.exitCode == 0 else {
+            throw MCPError.toolExecutionFailed(
+                "swiftc -emit-module failed (exit=\(outcome.process.exitCode)) for module '\(moduleName)': \(truncate(outcome.process.standardError))"
+            )
+        }
+        return MaterializedModule(
+            moduleDir: scratch.directory.path,
+            dependencySearchPaths: resolved.searchPaths,
+            frameworkSearchPaths: resolved.frameworkSearchPaths,
+            sdkPath: extractSDK(from: resolved.extraSwiftcArgs)
+        )
+    }
+
+    /// Pluck `-sdk <path>` out of the resolver's extraSwiftcArgs.
+    /// XcodebuildResolver always appends `["-sdk", SDKROOT, "-swift-version", ...]`
+    /// when SDKROOT is non-empty, so a simple linear scan for the flag is
+    /// enough — we don't try to be clever about other tools potentially
+    /// repeating the flag.
+    private func extractSDK(from args: [String]) -> String? {
+        var iterator = args.makeIterator()
+        while let arg = iterator.next() {
+            if arg == "-sdk", let value = iterator.next(), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     // MARK: - swift-api-digester invocations
@@ -247,6 +276,8 @@ public struct ApiDiffTool: MCPTool {
         digesterPath: String,
         moduleName: String,
         includePaths: [String],
+        frameworkSearchPaths: [String],
+        sdkPath: String?,
         outputPath: String,
         target: String?
     ) async throws {
@@ -260,6 +291,20 @@ public struct ApiDiffTool: MCPTool {
         // `import <PeerModule>` when it loads the target's interface.
         for path in includePaths where !path.isEmpty {
             arguments.append(contentsOf: ["-I", path])
+        }
+        // -F mirrors -I for framework imports: Xcode targets pull in
+        // UIKit/AppKit/etc. via framework search paths, and any user
+        // framework dependency relies on the same channel. Without -F the
+        // dump would fail to resolve `import <Framework>`.
+        for path in frameworkSearchPaths where !path.isEmpty {
+            arguments.append(contentsOf: ["-F", path])
+        }
+        // -sdk pins the same SDK swiftc compiled the module against. The
+        // digester's default SDK is host-toolchain-relative and almost
+        // always mismatches what an Xcode resolver chose (iphoneos.sdk vs
+        // macosx.sdk, version drift between Xcode major releases, ...).
+        if let sdkPath, !sdkPath.isEmpty {
+            arguments.append(contentsOf: ["-sdk", sdkPath])
         }
         arguments.append(contentsOf: [
             "-o", outputPath,

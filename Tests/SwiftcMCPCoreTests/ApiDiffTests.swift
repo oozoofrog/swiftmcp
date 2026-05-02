@@ -144,18 +144,34 @@ struct ApiDiffTests {
         #expect(FileManager.default.fileExists(atPath: result.currentDumpPath))
     }
 
+    /// Stage 4-4 후속: xcodeProject self-diff. The fixture is a static-lib
+    /// target with one Swift file and no framework dependencies, so the
+    /// `-sdk` + `-swift-version` flags the XcodebuildResolver threads
+    /// through `extraSwiftcArgs` are enough for `swiftc -emit-module`.
+    /// We share a CachedBuildArgsResolver between baseline and current so
+    /// the second resolve hits the cache instead of running xcodebuild
+    /// twice (saves roughly half the wall-clock cost).
     @Test
-    func xcodeInputCurrentlyRejected() async throws {
-        let tool = ApiDiffTool(toolchain: ToolchainResolver())
-        await #expect(throws: MCPError.self) {
-            _ = try await tool.call(arguments: .object([
-                "baseline": .object([
-                    "project": .string(fixturePath("SampleProject.xcodeproj")),
-                    "target_name": .string("Sample")
-                ]),
-                "current": .object(["file": .string(v2Path())]),
-                "module_name": .string("Sample")
-            ]))
-        }
+    func xcodeProjectSelfDiffsCleanly() async throws {
+        let cache = CachedBuildArgsResolver(wrapping: DefaultBuildArgsResolver())
+        let tool = ApiDiffTool(toolchain: ToolchainResolver(), resolver: cache)
+        let response = try await tool.call(arguments: .object([
+            "baseline": .object([
+                "project": .string(fixturePath("SampleProject.xcodeproj")),
+                "target_name": .string("Sample")
+            ]),
+            "current": .object([
+                "project": .string(fixturePath("SampleProject.xcodeproj")),
+                "target_name": .string("Sample")
+            ]),
+            "module_name": .string("Sample")
+        ]))
+
+        #expect(response.isError == false)
+        let result = try decodeResult(ApiDiffTool.Result.self, response)
+        #expect(result.moduleName == "Sample")
+        #expect(result.summary.totalFindings == 0)
+        #expect(FileManager.default.fileExists(atPath: result.baselineDumpPath))
+        #expect(FileManager.default.fileExists(atPath: result.currentDumpPath))
     }
 }
