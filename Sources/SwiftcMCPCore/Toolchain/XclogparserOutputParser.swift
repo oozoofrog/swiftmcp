@@ -80,15 +80,41 @@ public enum XclogparserOutputParser {
 
     // MARK: - Tree walking
 
+    /// Walk the BuildStep tree and collect nodes that represent an Xcode
+    /// target. A node only counts as a target if it satisfies BOTH:
+    ///   - `type == "target"` (xclogparser's BuildStepType enum)
+    ///   - has either a non-empty `targetName` field (canonical, current
+    ///     xclogparser) or a `title` that starts with `Build target ` (the
+    ///     older convention, kept as a fallback).
+    /// Nodes that pass the type check but have neither identifier-bearing
+    /// field are not real Xcode targets — they're sometimes seen in
+    /// aggregate-target wrappers or schema variants we don't fully
+    /// understand, and surfacing them would silently inflate
+    /// `targetTimings` with phantom entries. We also stop recursing once
+    /// we find a target — its children are tasks (CompileSwift, Ld, …),
+    /// not nested targets, so descending further would either no-op or,
+    /// in older xclogparser variants that re-emit a target wrapper inside
+    /// a parent target, double-count.
     private static func collectTargets(in node: [String: Any], into bag: inout [[String: Any]]) {
-        if (node["type"] as? String) == "target" {
+        if (node["type"] as? String) == "target", isRealTargetNode(node) {
             bag.append(node)
+            return
         }
         if let subSteps = node["subSteps"] as? [[String: Any]] {
             for child in subSteps {
                 collectTargets(in: child, into: &bag)
             }
         }
+    }
+
+    private static func isRealTargetNode(_ node: [String: Any]) -> Bool {
+        if let targetName = node["targetName"] as? String, !targetName.isEmpty {
+            return true
+        }
+        if let title = node["title"] as? String, title.hasPrefix("Build target ") {
+            return true
+        }
+        return false
     }
 
     /// Sum sub-step durations whose `title` matches a coarse command class.
@@ -101,13 +127,14 @@ public enum XclogparserOutputParser {
         // Name source: prefer the human-readable target name from
         // xclogparser's `targetName` if present; otherwise fall back to
         // `title`, which xclogparser populates as `Build target <Name>`
-        // in older versions. We strip that prefix when present.
+        // in older versions. `collectTargets` already guarantees one of
+        // these two channels yields a usable name, so this is just the
+        // extraction half of that contract.
         let name: String
         if let direct = target["targetName"] as? String, !direct.isEmpty {
             name = direct
-        } else if let title = target["title"] as? String, !title.isEmpty {
-            let prefix = "Build target "
-            name = title.hasPrefix(prefix) ? String(title.dropFirst(prefix.count)) : title
+        } else if let title = target["title"] as? String, title.hasPrefix("Build target ") {
+            name = String(title.dropFirst("Build target ".count))
         } else {
             return nil
         }

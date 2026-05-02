@@ -649,6 +649,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **xclogparser는 PATH-가용 시 graceful augment**: 외부 의존을 강제하지 않는 패턴 — `/usr/bin/env which xclogparser`로 가용성 확인, 가용하면 per-target rollup 추가, 미가용이면 `xclogparserAvailable: false` + `targetTimings: null`로 응답하고 도구는 정상 succeed. `BuildTimingSummaryParser` per-command-class 데이터는 항상 보장.
 - **응답 schema의 path-vs-inline 정책**: 큰 산출물(build.log, result.xcresult)은 항상 PersistentScratch 경로로만 노출. xclogparser 원본 JSON은 1차에서 응답에 inline 안 함 (압박 회피) — 후속에서 옵션으로 노출 가능.
 - **macOS 26.x SWBBuildService contention은 integration 테스트의 결정성을 깨뜨림**: SampleProject self-build 통합 테스트가 idle 호스트에선 통과하나, 사용자 다른 xcodebuild(예: Papers test) 동시 실행 시 SDK-probe 단계(`ExecuteExternalTool clang`)에서 10분+ 멈춤. swift-testing의 `.disabled("…")` trait로 default skip 처리 + 깨끗한 환경에서 수동 실행하도록 메시지에 명시. 단위 테스트 19개로 기능 검증은 충분 (parser 결정성 + 입력 검증 + cancel 전파).
+- **xclogparser target 필터는 두 단계로 강화** (Codex 후속 지적): `type == "target"`만 보면 (a) 이름 없는 빈 wrapper 노드, (b) parent target 안에 중복 emit된 target wrapper, (c) `title`만 가진 비-target step이 모두 `targetTimings`에 phantom entry로 섞일 수 있음. 수정: `isRealTargetNode`이 `targetName` 비어있지 않거나 `title`이 `Build target ` prefix로 시작하는지 둘 중 하나를 추가 검증; target 발견 시 그 subSteps 재귀 중단 (자식은 task이지 nested target이 아님). 회귀 테스트 `ignoresNonTargetNodesAndNestedRewrappers`이 세 케이스 동시 검증.
 
 ### Stage 4 후속 후보 (윤곽만)
 

@@ -132,6 +132,55 @@ struct XclogparserOutputParserTests {
         }
     }
 
+    /// Per Codex stop-time review: tighten the target filter. Three
+    /// scenarios this catches:
+    ///   1. A node with `type == "target"` but no `targetName` and a
+    ///      `title` that doesn't start with `Build target ` — we don't
+    ///      know what it is, surfacing it would silently inflate
+    ///      `targetTimings` with a phantom entry.
+    ///   2. Nested targets inside a parent target's subSteps — older
+    ///      xclogparser variants sometimes re-emit a target wrapper
+    ///      under a parent for aggregate targets; descending into target
+    ///      subSteps would double-count.
+    ///   3. Non-target step types (`task`, `parallelStep`) that happen
+    ///      to carry a title.
+    @Test
+    func ignoresNonTargetNodesAndNestedRewrappers() throws {
+        let json = """
+        {
+          "type": "buildLog",
+          "subSteps": [
+            {
+              "type": "target",
+              "title": "Some weird heading without prefix",
+              "duration": 1.0,
+              "subSteps": []
+            },
+            {
+              "type": "target",
+              "targetName": "Outer",
+              "duration": 5.0,
+              "subSteps": [
+                {
+                  "type": "target",
+                  "targetName": "InnerWrapped",
+                  "duration": 2.0,
+                  "subSteps": []
+                },
+                { "type": "task", "title": "Build target Phantom", "duration": 0.5 }
+              ]
+            }
+          ]
+        }
+        """
+        let output = try XclogparserOutputParser.parse(jsonText: json)
+        // Only the legitimately-named outer target counts. The
+        // unnamed "weird heading" target, the nested wrapper inside
+        // Outer, and the type=task with target-shaped title all get
+        // filtered out.
+        #expect(output.targets.map(\.name) == ["Outer"])
+    }
+
     @Test
     func unrecognizedTaskTitlesGoIntoNeitherBucket() throws {
         // A target with sub-steps that don't match Swift / link prefixes
