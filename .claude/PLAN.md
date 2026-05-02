@@ -558,20 +558,20 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 
 ### Stage 4-3b (완료) — fingerprint에 content hash 추가
 
-253 tests / 47 suites 통과. Stage 4-3 후속 후보 중 *file content hash*. mtime+size 만으로는 mtime-preserving 컨텐츠 변경(`git checkout`, `cp -p`, `touch -r` 후 편집)을 silent miss → cache가 stale 분석을 반환하던 케이스를 닫음.
+254 tests / 47 suites 통과. Stage 4-3 후속 후보 중 *file content hash*. mtime+size 만으로는 mtime-preserving 컨텐츠 변경(`git checkout`, `cp -p`, `touch -r` 후 편집)을 silent miss → cache가 stale 분석을 반환하던 케이스를 닫음.
 
 수행 작업:
 1. ✓ `Fingerprint` 타입을 `[String: TimeInterval]` → `[String: Stamp]`로 변경. `Stamp = (mtime: TimeInterval, size: Int64?, contentHash: Data?)`.
-2. ✓ `stamp(at:hashContent:)` 헬퍼: 정규 파일이고 `hashContent`가 true면 `SHA256.hash(data:)` (CryptoKit) 추가.
-3. ✓ `makeFingerprint`이 `Set(resolved.inputFiles)` membership으로 hash 여부 결정 — inputFiles만 hash, 디렉토리/매니페스트/search-path는 mtime+size만.
-4. ✓ 단위 테스트 추가: `invalidatesWhenContentChangesButMtimeAndSizePreserved` — 정수 epoch로 mtime 핀 + 같은 길이 두 본문 + APFS round-trip 확인. 다른 14 단위 테스트(missing path, mtime bump, directory listing change 등) 회귀 0.
+2. ✓ `stamp(at:)` 헬퍼: 정규 파일이면 항상 `SHA256.hash(data:)` (CryptoKit) 추가. 디렉토리·없는 path는 contentHash=nil.
+3. ✓ `makeFingerprint`은 `paths` 전체를 `stamp(at:)`에 그대로 흘려보냄 — regular-file gate가 stamp 안에 있어 inputFiles와 매니페스트(Package.swift, Package.resolved, project.pbxproj, contents.xcworkspacedata, referenced pbxproj)를 동일하게 hash한다.
+4. ✓ 단위 테스트 추가 (2건): `invalidatesWhenContentChangesButMtimeAndSizePreserved`(inputFile), `invalidatesWhenManifestContentChangesButMtimeAndSizePreserved`(Package.swift). 둘 다 정수 epoch로 mtime 핀 + 같은 길이 두 본문 + APFS round-trip 확인. 기존 14 단위 테스트 회귀 0.
 5. ✓ 통합 테스트 `swiftPMPackageHitsCacheSecondTime`: 2번째 호출이 여전히 첫 호출 대비 5x+ 빠름 — hash I/O가 캐시 ROI를 의미 있게 깎지 않음을 입증.
 
 학습 사항:
 - **CryptoKit는 외부 의존이 아님**: 프로젝트의 "Foundation only" 정책은 MCP 와이어 레이어(외부 라이브러리 금지)에 적용. CryptoKit은 macOS 13+ / Swift 6.0+에 항상 동봉되는 시스템 프레임워크라 third-party 의존성이 아님. SHA-256 한 곳 호출이라 직접 구현보다 표준 호출이 안전.
 - **APFS sub-second mtime의 round-trip 함정**: `setAttributes(.modificationDate: someDate)`가 fractional second를 보존하더라도, Date↔ TimeInterval ↔ FS 저장 ↔ 다시 Date 복원 경로에서 마지막 비트가 어긋나는 경우가 있어 두 Date의 `==`가 실패할 수 있다. 테스트에서 mtime 핀이 필요하면 정수 epoch(`Date(timeIntervalSince1970: 1_700_000_000)`)를 사용해 round-trip을 깨끗이 만든다.
-- **hash는 inputFiles 전용**: 디렉토리는 컨텐츠 hash 의미 없음(mtime이 add/remove 신호). search-path/매니페스트도 매번 통째로 hashing하면 캐시가 무력화 — *형태가 변하면 mtime이 같이 변한다*는 가정으로 mtime+size만. inputFiles는 swiftc가 실제로 읽는 바이트라 byte-level 변화가 곧 분석 delta.
-- **cache hit-validate 비용 vs ROI**: 단순 `swiftc -typecheck` 입력 1~2 파일(~수 KB)은 hash 비용 ~0.1ms 미만. 100파일 SwiftPM target도 ~1MB 분량 ≪ 1ms. 반면 우회되는 resolver 호출(`swift package describe`, `xcodebuild -showBuildSettings`)은 수백 ms 이상. 캐시 ROI는 여전히 큼.
+- **hash 정책: 모든 추적 정규 파일** (Codex review 추가 지적): inputFiles만 hash하면 매니페스트(Package.swift, project.pbxproj, contents.xcworkspacedata, referenced pbxproj)가 mtime+size 보존 편집에서 silent stale로 남는다 — 정확히 git checkout / Xcode in-place rewrite의 시나리오. regular-file 판정을 `stamp(at:)` 내부로 옮기면 디렉토리는 자동으로 hash 제외, 호출부는 path 종류를 신경 쓸 필요 없이 동일하게 다룬다.
+- **cache hit-validate 비용 vs ROI**: 단순 `swiftc -typecheck` 입력 1~2 파일(~수 KB)은 hash 비용 ~0.1ms 미만. 100파일 SwiftPM target + 매니페스트도 ~1MB 분량 ≪ 1ms. xcodeWorkspace의 referenced pbxproj가 1MB여도 ~1ms. 우회되는 resolver 호출(`swift package describe`, `xcodebuild -showBuildSettings`)은 수백 ms 이상이라 ROI 유지.
 
 ### Stage 4-4 (완료) — `api_diff`: Swift API breakage 검출
 

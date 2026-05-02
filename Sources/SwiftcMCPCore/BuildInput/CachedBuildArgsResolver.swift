@@ -14,13 +14,16 @@ import CryptoKit
 /// - **mtime change**: ordinary edits and saves bump it.
 /// - **size change**: most edits change file length too, redundant signal that's
 ///   cheap to capture from `attributesOfItem`.
-/// - **content hash change** (regular files only): catches in-place rewrites
-///   that preserve mtime — `git checkout`, `cp -p`, `touch -r`, or any tool
-///   that restores the original timestamp after writing new bytes. Without this
-///   the cache silently returned stale analysis. Hash is computed only for
-///   `resolved.inputFiles`, since those are the bytes swiftc actually reads;
-///   directories don't have hashable content (`mtime` covers add/remove there)
-///   and search-path/manifest paths only need their *shape* tracked.
+/// - **content hash change** (every tracked regular file): catches in-place
+///   rewrites that preserve mtime — `git checkout`, `cp -p`, `touch -r`, or
+///   any tool that restores the original timestamp after writing new bytes.
+///   This applies uniformly to `resolved.inputFiles`, manifests
+///   (`Package.swift`, `Package.resolved`, `project.pbxproj`,
+///   `contents.xcworkspacedata`), and any other regular file we track —
+///   editing a manifest in place silently used to hit stale cache too.
+///   Directories aren't hashed (mtime covers add/remove there); the
+///   regular-file check happens at stamp time, so the path set can mix
+///   files and directories without per-case branching.
 /// - **Path missing**: handled via a sentinel mtime so missing-then-missing
 ///   still differs from missing-then-present.
 ///
@@ -146,17 +149,15 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         // directory.
         paths.formUnion(manifestPaths(for: input))
 
-        // Only `inputFiles` get content-hashed: those are the bytes swiftc
-        // actually compiles, so byte-level changes there *are* the analysis
-        // delta we must catch. Directories don't have hashable content
-        // (mtime covers add/remove). Manifests / search-path roots are
-        // tracked for *shape* only — any meaningful manifest edit also moves
-        // mtime forward, and re-hashing every workspace XML on every cache
-        // hit would dwarf the resolver call we're trying to skip.
-        let inputFileSet = Set(resolved.inputFiles)
+        // Hash every regular file we track — inputFiles AND manifests
+        // (Package.swift, project.pbxproj, contents.xcworkspacedata, ...)
+        // — because all of them can be rewritten in place with mtime
+        // restored, and only the hash distinguishes equal-length rewrites.
+        // The regular-file check inside `stamp` skips directories
+        // automatically, so we can throw the whole `paths` set at it.
         var fingerprint: Fingerprint = [:]
         for path in paths {
-            fingerprint[path] = stamp(at: path, hashContent: inputFileSet.contains(path))
+            fingerprint[path] = stamp(at: path)
         }
         return fingerprint
     }
@@ -318,16 +319,16 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
     }
 
     /// Build a `Stamp` for a path. Missing paths get the `(-1, nil, nil)`
-    /// sentinel. Regular files get `size`; if `hashContent` is true, also
-    /// SHA-256 of the bytes. Directories get only `mtime + size` (size is
-    /// platform-defined for dirs but stable enough to participate in the
-    /// signal).
+    /// sentinel. Regular files get `size` plus SHA-256 of their bytes.
+    /// Directories get only `mtime + size` (size is platform-defined for
+    /// dirs but stable enough to participate in the signal); hashing a
+    /// directory has no defined meaning, so the regular-file gate skips it.
     ///
     /// Hash failures (e.g. permission denied mid-read) fall back to
     /// `contentHash: nil`. That still differs from a successful hash on the
     /// next call, so the entry will invalidate — false misses cost a
     /// re-resolve, never staleness.
-    private func stamp(at path: String, hashContent: Bool) -> Stamp {
+    private func stamp(at path: String) -> Stamp {
         let fm = FileManager.default
         guard let attrs = try? fm.attributesOfItem(atPath: path) else {
             return Stamp(mtime: -1, size: nil, contentHash: nil)
@@ -336,7 +337,7 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         let size = (attrs[.size] as? NSNumber)?.int64Value
         let isRegularFile = (attrs[.type] as? FileAttributeType) == .typeRegular
         var contentHash: Data? = nil
-        if hashContent, isRegularFile,
+        if isRegularFile,
            let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
             contentHash = Data(SHA256.hash(data: data))
         }

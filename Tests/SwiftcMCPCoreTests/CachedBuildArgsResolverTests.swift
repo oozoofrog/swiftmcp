@@ -559,6 +559,60 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review (Stage 4-3b follow-up): the first hash
+    /// pass only covered `resolved.inputFiles`. Manifest paths
+    /// (Package.swift, project.pbxproj, contents.xcworkspacedata) are
+    /// edited in place by Xcode, code generators, and `git checkout` — same
+    /// hazard, different file. With the hash now extended to every tracked
+    /// regular file, an mtime+size-preserving manifest rewrite invalidates.
+    @Test
+    func invalidatesWhenManifestContentChangesButMtimeAndSizePreserved() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fm = FileManager.default
+        let pkgDir = scratch.directory.appending(path: "Pkg", directoryHint: .isDirectory)
+        let sourcesDir = pkgDir.appending(path: "Sources", directoryHint: .isDirectory)
+        try fm.createDirectory(at: sourcesDir, withIntermediateDirectories: true)
+        // Two manifest bodies of identical UTF-8 length so size can't
+        // distinguish them, and both written before the cache observes the
+        // file. After the first resolve we restore mtime to the same
+        // pinned epoch — only SHA-256 of the manifest can fire the miss.
+        let manifestURL = pkgDir.appending(path: "Package.swift")
+        try "// version A\n".write(to: manifestURL, atomically: true, encoding: .utf8)
+        let pinnedMtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try fm.setAttributes([.modificationDate: pinnedMtime], ofItemAtPath: manifestURL.path)
+        let sourceURL = sourcesDir.appending(path: "Lib.swift")
+        try "public let x = 1\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: [sourceURL.path],
+            moduleName: "Lib"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.swiftPMPackage(
+            path: pkgDir.path,
+            targetName: "Lib",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Rewrite manifest with identical-length body, restore the same
+        // pinned mtime. mtime equal, size equal — hash is the only
+        // remaining signal.
+        try "// version B\n".write(to: manifestURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: pinnedMtime], ofItemAtPath: manifestURL.path)
+        let postAttrs = try fm.attributesOfItem(atPath: manifestURL.path)
+        #expect((postAttrs[.modificationDate] as? Date) == pinnedMtime)
+        #expect("// version A\n".utf8.count == "// version B\n".utf8.count)
+        #expect((postAttrs[.size] as? NSNumber)?.intValue == "// version B\n".utf8.count)
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
