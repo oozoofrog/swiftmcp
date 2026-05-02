@@ -133,8 +133,11 @@ esac
 # silently otherwise so the script stays idempotent on hosts that don't
 # run Claude.
 if command -v claude >/dev/null 2>&1; then
-    if claude mcp list -s user 2>/dev/null | grep -q '^swiftmcp\b'; then
-        log "Claude Code already has a user-scoped 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove -s user swiftmcp && claude mcp add -s user swiftmcp $INSTALL_PATH"
+    # `claude mcp get <name>` exits 0 iff the server is registered in *any*
+    # scope. We use it as our existence probe (and it's much faster than
+    # `claude mcp list`, which runs a health check on every entry).
+    if claude mcp get swiftmcp >/dev/null 2>&1; then
+        log "Claude Code already has a 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove swiftmcp && claude mcp add -s user swiftmcp $INSTALL_PATH"
     else
         log "registering with Claude Code (user scope)"
         if ! claude mcp add -s user swiftmcp "$INSTALL_PATH"; then
@@ -148,10 +151,13 @@ fi
 # Codex CLI ships its own `codex mcp add` subcommand that owns the
 # `[mcp_servers.<name>]` sections in ~/.codex/config.toml — preferred
 # over editing the TOML by hand because Codex parses + rewrites the
-# file safely. Idempotency: `codex mcp list` returns the registered
-# servers; if 'swiftmcp' is already there we leave it alone.
+# file safely. Idempotency: `codex mcp get <name>` exits 0 iff the
+# server is registered. We avoid `codex mcp list | grep -q` because
+# `grep -q`'s early-exit triggers SIGPIPE on the codex process; codex
+# converts that to a non-zero exit code, and `set -o pipefail` then
+# propagates it as a false-negative miss.
 if command -v codex >/dev/null 2>&1; then
-    if codex mcp list 2>/dev/null | grep -q '^swiftmcp\b'; then
+    if codex mcp get swiftmcp >/dev/null 2>&1; then
         log "Codex CLI already has a 'swiftmcp' entry; skipping registration. Re-register with: codex mcp remove swiftmcp && codex mcp add swiftmcp -- $INSTALL_PATH"
     else
         log "registering with Codex CLI"
