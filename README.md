@@ -32,10 +32,23 @@ The release binary lands at `.build/release/mcpswx`. Copying to `/usr/local/bin/
 
 ## MCP client setup
 
+The one-line installer auto-registers swiftmcp with Claude Code (user scope) and Codex CLI when those tools are present. The snippets below cover every supported client for manual installs.
+
 ### Claude Code
 
 ```sh
-claude mcp add swiftmcp /usr/local/bin/mcpswx
+claude mcp add -s user swiftmcp /usr/local/bin/mcpswx
+```
+
+`-s user` makes the server visible across every project the user opens; without the flag, registration is project-local and only takes effect inside whatever cwd the command ran in.
+
+### Codex CLI
+
+Append to `~/.codex/config.toml` (create the file if it doesn't exist):
+
+```toml
+[mcp_servers.swiftmcp]
+command = "/usr/local/bin/mcpswx"
 ```
 
 ### Claude Desktop
