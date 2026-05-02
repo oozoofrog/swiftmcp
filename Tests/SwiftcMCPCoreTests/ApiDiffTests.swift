@@ -112,6 +112,38 @@ struct ApiDiffTests {
         #expect(FileManager.default.fileExists(atPath: result.currentDumpPath))
     }
 
+    /// Per Codex stop-time review: even after we route swiftPMPackage through
+    /// `swiftc -emit-module`, dump-sdk was only being given `-I <our emitted
+    /// dir>` — the resolver's `searchPaths` (the real package's Modules dir,
+    /// containing prebuilt dependency modules) were dropped. For App→Core
+    /// packages that meant `import Core` failed at dump-sdk time even though
+    /// emit-module had succeeded. The fix threads `dependencySearchPaths`
+    /// alongside the freshly emitted module dir on every dump-sdk call.
+    @Test
+    func swiftPMPackageWithDependencySelfDiffsCleanly() async throws {
+        let tool = ApiDiffTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "baseline": .object([
+                "package": .string(fixturePath("MultiTargetPackage")),
+                "target_name": .string("App")
+            ]),
+            "current": .object([
+                "package": .string(fixturePath("MultiTargetPackage")),
+                "target_name": .string("App")
+            ]),
+            "module_name": .string("App")
+        ]))
+
+        #expect(response.isError == false)
+        let result = try decodeResult(ApiDiffTool.Result.self, response)
+        #expect(result.moduleName == "App")
+        // Self-diff of unchanged App must still report nothing — proving the
+        // dump-sdk step found `Core` via the dependency search path.
+        #expect(result.summary.totalFindings == 0)
+        #expect(FileManager.default.fileExists(atPath: result.baselineDumpPath))
+        #expect(FileManager.default.fileExists(atPath: result.currentDumpPath))
+    }
+
     @Test
     func xcodeInputCurrentlyRejected() async throws {
         let tool = ApiDiffTool(toolchain: ToolchainResolver())

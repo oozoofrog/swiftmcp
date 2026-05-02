@@ -98,12 +98,12 @@ public struct ApiDiffTool: MCPTool {
 
         let start = Date()
 
-        let baselineModuleDir = try await materializeModule(
+        let baselineModule = try await materializeModule(
             input: baseline,
             moduleName: moduleName,
             scratch: baselineScratch
         )
-        let currentModuleDir = try await materializeModule(
+        let currentModule = try await materializeModule(
             input: current,
             moduleName: moduleName,
             scratch: currentScratch
@@ -115,14 +115,14 @@ public struct ApiDiffTool: MCPTool {
         try await runDump(
             digesterPath: digesterPath,
             moduleName: moduleName,
-            includePath: baselineModuleDir,
+            includePaths: [baselineModule.moduleDir] + baselineModule.dependencySearchPaths,
             outputPath: baselineDumpPath,
             target: baseline.target
         )
         try await runDump(
             digesterPath: digesterPath,
             moduleName: moduleName,
-            includePath: currentModuleDir,
+            includePaths: [currentModule.moduleDir] + currentModule.dependencySearchPaths,
             outputPath: currentDumpPath,
             target: current.target
         )
@@ -165,9 +165,18 @@ public struct ApiDiffTool: MCPTool {
 
     // MARK: - .swiftmodule materialization
 
-    /// Build (or locate) the `.swiftmodule` for a BuildInput and return the
-    /// directory swift-api-digester should pass via `-I`. The directory must
-    /// contain `<moduleName>.swiftmodule`.
+    /// What `materializeModule` returns: the directory holding the freshly
+    /// emitted `<moduleName>.swiftmodule`, plus any dependency-module search
+    /// paths the resolver supplied. swift-api-digester needs both via `-I`:
+    /// the first to load the analysis target, the rest to resolve `import`
+    /// statements that target peer modules in the same package.
+    private struct MaterializedModule {
+        let moduleDir: String
+        let dependencySearchPaths: [String]
+    }
+
+    /// Build the `.swiftmodule` for a BuildInput and return its directory
+    /// alongside any peer-module search paths.
     ///
     /// Why we always emit the module ourselves for swiftPMPackage: the
     /// SwiftPM resolver only triggers `swift build` when the chosen target has
@@ -180,11 +189,16 @@ public struct ApiDiffTool: MCPTool {
     /// dep-less packages work, dep-having packages still benefit from the
     /// pre-built dependency modules, and file/directory inputs share exactly
     /// the same code path.
+    ///
+    /// `dependencySearchPaths` carries `resolved.searchPaths` forward to the
+    /// dump-sdk step. Without that, swift-api-digester would only see our
+    /// emitted module and would fail to resolve `import Core` (or any other
+    /// peer module) when it tries to load the analysis target's interface.
     private func materializeModule(
         input: BuildInput,
         moduleName: String,
         scratch: PersistentScratch
-    ) async throws -> String {
+    ) async throws -> MaterializedModule {
         switch input {
         case .file, .directory, .swiftPMPackage:
             let resolved = try await resolver.resolveArgs(for: input)
@@ -215,7 +229,10 @@ public struct ApiDiffTool: MCPTool {
                     "swiftc -emit-module failed (exit=\(outcome.process.exitCode)) for module '\(moduleName)': \(truncate(outcome.process.standardError))"
                 )
             }
-            return scratch.directory.path
+            return MaterializedModule(
+                moduleDir: scratch.directory.path,
+                dependencySearchPaths: resolved.searchPaths
+            )
 
         case .xcodeProject, .xcodeWorkspace:
             throw MCPError.invalidParams(
@@ -229,18 +246,26 @@ public struct ApiDiffTool: MCPTool {
     private func runDump(
         digesterPath: String,
         moduleName: String,
-        includePath: String,
+        includePaths: [String],
         outputPath: String,
         target: String?
     ) async throws {
         var arguments = [
             "-dump-sdk",
-            "-module", moduleName,
-            "-I", includePath,
+            "-module", moduleName
+        ]
+        // Every include path becomes its own -I. The first entry holds the
+        // analysis target; the rest are dependency-module dirs the resolver
+        // gave us — without them swift-api-digester would fail to resolve
+        // `import <PeerModule>` when it loads the target's interface.
+        for path in includePaths where !path.isEmpty {
+            arguments.append(contentsOf: ["-I", path])
+        }
+        arguments.append(contentsOf: [
             "-o", outputPath,
             "-avoid-tool-args",
             "-avoid-location"
-        ]
+        ])
         if let target {
             arguments.append(contentsOf: ["-target", target])
         }
@@ -251,8 +276,9 @@ public struct ApiDiffTool: MCPTool {
             throw MCPError.toolExecutionFailed("swift-api-digester -dump-sdk launch failed: \(error)")
         }
         guard result.exitCode == 0 else {
+            let primary = includePaths.first ?? "<unknown>"
             throw MCPError.toolExecutionFailed(
-                "swift-api-digester -dump-sdk failed (exit=\(result.exitCode)) for module '\(moduleName)' at \(includePath): \(truncate(result.standardError))"
+                "swift-api-digester -dump-sdk failed (exit=\(result.exitCode)) for module '\(moduleName)' at \(primary): \(truncate(result.standardError))"
             )
         }
     }

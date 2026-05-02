@@ -558,7 +558,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 
 ### Stage 4-4 (완료) — `api_diff`: Swift API breakage 검출
 
-251 tests / 47 suites 통과. PLAN §8 후속 후보 중 *API diff*. `swift-api-digester` CLI를 wrapping해 두 시점의 모듈 API surface를 비교하고 카테고리별 변화를 구조화 결과로 반환.
+252 tests / 47 suites 통과. PLAN §8 후속 후보 중 *API diff*. `swift-api-digester` CLI를 wrapping해 두 시점의 모듈 API surface를 비교하고 카테고리별 변화를 구조화 결과로 반환.
 
 수행 작업:
 1. ✓ `Toolchain/ApiDigesterParser.swift` — `-diagnose-sdk` 텍스트 출력을 12개 카테고리(removed/moved/renamed/type/declAttribute/fixedLayout/protocolConformance/protocolRequirement/classInheritance/genericSignature/rawRepresentable/others)로 파싱. 모르는 헤더는 `others` 버킷에 떨어뜨려 toolchain 업그레이드 시 silent drop 회피.
@@ -566,13 +566,14 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 3. ✓ `.swiftmodule` 산출 전략: file/directory는 `swiftc -emit-module` 직접 호출 후 PersistentScratch에 둠, swiftPMPackage는 SwiftPMPackageResolver의 searchPaths 첫 항목 재사용. xcodeProject/xcodeWorkspace는 `MCPError.invalidParams`로 1차 거절.
 4. ✓ Mcpswx 등록 (cachedResolver 주입, 총 14 도구).
 5. ✓ Fixture: `Tests/Fixtures/ApiDiff/V{1,2}/Lib.swift` — V1=Counter+helloAdd, V2=Counter+doubled+newApi (helloAdd removed).
-6. ✓ 단위 6 (parser 12 섹션, 빈 입력, 헤더 only, 다중 finding, "API breakage:" prefix 보존, unknown section→others) + 통합 5 (V1↔V2 removed, ABI 모드 added, 동일 버전 empty, module_name 누락 reject, xcode 케이스 reject).
+6. ✓ 단위 6 (parser 12 섹션, 빈 입력, 헤더 only, 다중 finding, "API breakage:" prefix 보존, unknown section→others) + 통합 7 (V1↔V2 removed, ABI 모드 added, 동일 버전 empty, module_name 누락 reject, xcode 케이스 reject, dep-less swiftPMPackage self-diff, dep-having App→Core swiftPMPackage self-diff).
 
 학습 사항:
 - **swift-api-digester는 진단을 *stderr*로 출력**: 첫 probe에서 `2>&1`로 합쳐 보다가 도구는 stdout만 파싱했더니 모든 finding이 빈 배열로 떨어졌다. `-compiler-style-diags` 유무 무관하게 `/* Section */` 텍스트는 stderr로 emit. 도구의 `rawDiagnoseOutput`/parser 입력 모두 `process.standardError`. (Stage 4-1의 swiftc dump-ast가 stdout이었던 것과 정반대 — 둘 다 같은 toolchain이지만 sub-tool마다 다르므로 항상 probe로 확정해야 함.)
 - **`-json` flag 미작용**: swift-api-digester가 `-json -o file.json`을 받아도 같은 텍스트가 파일에 저장됨. JSON 출력 모드는 deserialize-diff 같은 다른 모드에만 의미 있고, diagnose-sdk는 텍스트 채널만. 텍스트 파서가 사실상 1차 채널.
 - **`WritableKeyPath`는 `Sendable` 아님**: section title → keypath dictionary로 파서 분기를 표현하려 했으나 Swift 6 strict concurrency가 static let에 거절. 내부 enum + switch로 해결 (12-way switch가 keypath dictionary보다 가독성도 더 나음).
 - **swiftPMPackage 분석 대상 모듈은 resolver의 부산물이 아님** (Codex review 지적): SwiftPMPackageResolver는 *target_dependencies가 비어 있으면* `swift build`를 건너뜀 → searchPaths empty. api_diff가 `searchPaths.first`로 분석 대상 .swiftmodule을 찾으려 하면 dep-less 패키지(가장 흔한 케이스 SamplePackage)에서 즉시 실패. 수정: swiftPMPackage 케이스를 file/directory와 같은 코드 path로 통합 — `resolved.inputFiles`를 받아 `swiftc -emit-module` 직접 호출, `resolved.searchPaths`(있을 시)는 의존 모듈 import용 -I로 전달. resolver 부산물에 의존하지 않으므로 dep 유무 모두 동작.
+- **`-dump-sdk`도 의존 모듈 -I가 필요** (Codex 후속 지적): emit-module 단계만 의존 search path를 받고 dump-sdk는 우리가 새로 emit한 디렉토리만 받게 했더니, App→Core 같은 의존 패키지에서 dump-sdk가 `import Core`를 해석하지 못해 실패. swift-api-digester가 모듈 인터페이스를 로드할 때도 swiftc와 동일한 모듈 검색 환경이 필요한 것이 원인. 수정: `materializeModule`이 `MaterializedModule { moduleDir, dependencySearchPaths }`를 반환하고, `runDump`가 `includePaths: [String]`을 받아 모든 경로를 `-I`로 풀어 넘김. 회귀 테스트는 MultiTargetPackage `App` 타깃 self-diff로 의존 import가 dump 단계까지 살아남는지 검증.
 
 ### Stage 4 후속 후보 (윤곽만)
 
