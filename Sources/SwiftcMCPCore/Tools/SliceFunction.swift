@@ -131,11 +131,19 @@ public struct SliceFunctionTool: MCPTool {
         // dumps would miss cross-file type lookups (e.g. `App/main.swift`
         // referencing a type defined in `Core/Counter.swift`) and produce
         // wrong references.
+        // Forward every option the resolver produced — searchPaths,
+        // frameworkSearchPaths, and extraSwiftcArgs — so cross-target imports
+        // (App → Core in MultiTargetPackage), Apple framework imports
+        // (UIKit/Foundation needing -sdk + -F), and resolver-supplied flags
+        // (-swift-version, etc.) all reach swiftc. Dropping any of them on
+        // the floor surfaces as "no such module 'X'" or unresolved-type
+        // errors during -dump-ast for any input that has an internal
+        // dependency. The same channel api_diff's materializeModule uses.
         let astOutcome = try await invocation.run(
             modeArgs: ["-dump-ast"],
             inputFiles: resolved.inputFiles,
             outputFile: nil,
-            options: .init(target: target, moduleName: resolved.moduleName)
+            options: .init(resolved: resolved)
         )
         // Channel fallback: single-file `swiftc -dump-ast` writes the AST to
         // stdout, but multi-file invocations route the entire AST to stderr

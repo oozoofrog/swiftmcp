@@ -73,6 +73,14 @@ public enum ProcessRunnerError: Error, Sendable {
     case launchFailed(String)
 }
 
+/// Reference-typed mutable slot for capturing pipe reads from DispatchQueue
+/// blocks. We can't pass `inout Data` into a `@Sendable` queue closure, and
+/// the project bans NSLock/atomics — but DispatchGroup-paired blocks already
+/// give us happens-before ordering, so a class wrapper is enough.
+final class DataBox: @unchecked Sendable {
+    var value: Data = Data()
+}
+
 /// Run an external process to completion, capturing stdout and stderr.
 /// Pipes are read on a detached task so the call doesn't block the caller's actor.
 /// Parent-task cancellation is propagated to the child via SIGTERM (see `PIDHolder`).
@@ -118,21 +126,34 @@ public func runProcess(
                 Task { await holder.clear() }
             }
 
-            // Read stdout and stderr concurrently so a write-heavy stderr
-            // doesn't fill its pipe buffer and stall the child while we're
-            // still blocked reading stdout. swiftc multi-file `-dump-ast`
+            // Drain both pipes concurrently. swiftc multi-file `-dump-ast`
             // routes the entire AST to stderr (single-file uses stdout), so
-            // sequential reads on those would deadlock for any input that
-            // produced more than one frontend job.
-            async let stdoutDataTask: Data = Task.detached {
-                stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            }.value
-            async let stderrDataTask: Data = Task.detached {
-                stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            }.value
-            let stdoutData = await stdoutDataTask
-            let stderrData = await stderrDataTask
+            // a sequential read pattern would block reading stdout while
+            // stderr fills its pipe buffer and the child stalls writing.
+            // We use two global-queue blocks plus `DispatchGroup.notify`
+            // bridged into a continuation — that keeps the synchronously
+            // blocking `readDataToEndOfFile` calls off the cooperation
+            // pool (they each park a global-queue thread) and still hands
+            // control back to the async caller without `group.wait()` (which
+            // is unavailable in async contexts on Swift 6).
+            let stdoutBox = DataBox()
+            let stderrBox = DataBox()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let group = DispatchGroup()
+                let queue = DispatchQueue.global(qos: .userInitiated)
+                queue.async(group: group) {
+                    stdoutBox.value = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+                queue.async(group: group) {
+                    stderrBox.value = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+                group.notify(queue: queue) {
+                    continuation.resume()
+                }
+            }
             process.waitUntilExit()
+            let stdoutData = stdoutBox.value
+            let stderrData = stderrBox.value
 
             return ProcessResult(
                 exitCode: process.terminationStatus,

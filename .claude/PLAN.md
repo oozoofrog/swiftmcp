@@ -626,6 +626,8 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **stdin 상속이 swift-driver multi-file dump-ast을 hang시킴**: macOS 26.x에서 swift-driver가 multi-input batch frontend 시작 시 stdin을 probe하는 동작이 있어 보임 — 부모(test bundle 등)의 stdin을 그대로 상속하면 hang. `runProcess`이 `process.standardInput = FileHandle.nullDevice`로 잘라 즉시 EOF 반환.
 - **stdout/stderr 순차 읽기는 deadlock 위험**: `readDataToEndOfFile()`을 stdout → stderr 순으로 호출하던 패턴은 stderr에 24KB 정도만 들어와도 64KB pipe buffer가 차면서 child가 write block → child가 exit 못함 → stdout EOF 안 옴 → 영원히 멈춤. multi-file dump-ast는 이 위험에 정면으로 노출. Task.detached 두 개로 동시 read.
 - **응답 schema 확장은 backward-compatible**: `IncludedSymbol`에 새 `filePath` 필드를 추가했으나 기존 클라이언트는 모르는 필드를 무시할 뿐 깨지지 않음. 1차 마일스톤에서 `IncludedSymbol`을 file-naive하게 만든 결정이 이번에 비용 없이 회수됨.
+- **resolver 옵션 forwarding 누락은 직무 silent miss** (Codex 후속 지적): `SliceFunctionTool`이 `swiftc -dump-ast`를 호출하면서 `target`/`moduleName`만 넘기고 `searchPaths`/`frameworkSearchPaths`/`extraSwiftcArgs`를 버리면, dep-having SwiftPM 패키지(App→Core)에서 `import Core`를 해석하지 못해 dump-ast 실패. xcodeProject은 이미 거절하지만 `.directory` 입력에 search-path가 지정된 경우도 동일 위험. 수정: `SwiftcInvocation.Options.init(resolved:)` 사용해 한 번에 모든 옵션 전달 (api_diff의 `materializeModule` 동일 패턴).
+- **DispatchGroup pipe drain via 비동기 continuation**: 1차 시도의 sequential `readDataToEndOfFile`은 multi-file dump-ast의 stderr-heavy 출력에서 buffer 풀링으로 deadlock. `Task.detached { sync_blocking_call }.value` 패턴은 동작하긴 하나 다수 동시 호출에서 cooperation 풀 starvation 의심. 최종 형태: `withCheckedContinuation` + DispatchGroup notify로 두 글로벌 큐 블록 동시 drain → cooperation 풀에 부담 주지 않음. `DataBox`(`@unchecked Sendable` final class) 도입은 `var Data`를 `@Sendable` 클로저에 캡처할 수 없는 Swift 6 strict concurrency 우회용 — DispatchGroup의 happens-before가 동기화 보장.
 
 ### Stage 4 후속 후보 (윤곽만)
 
