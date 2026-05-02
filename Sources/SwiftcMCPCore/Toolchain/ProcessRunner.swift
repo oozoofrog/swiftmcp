@@ -150,7 +150,7 @@ public func runProcessWithTimeoutDiscardingOutput(
     timeout: TimeInterval
 ) async throws -> (exitCode: Int32, timedOut: Bool) {
     let holder = PIDHolder()
-    return try await withTaskCancellationHandler {
+    let result = try await withTaskCancellationHandler {
         try await Task.detached { @Sendable in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -203,6 +203,15 @@ public func runProcessWithTimeoutDiscardingOutput(
         // unstructured Task.
         Task { await holder.markCancelled() }
     }
+    // Parent-task cancel signals SIGTERM via PIDHolder, which lets the child exit
+    // and the detached Task return normally — but if we just hand the result back,
+    // the caller continues running follow-up steps (e.g. xcodebuild
+    // -showBuildSettings, SwiftFileList read) on a build that was forcibly torn
+    // down. Throwing `CancellationError` here ensures the surrounding resolver
+    // bails out immediately so cancelled api_diff calls don't process partial
+    // build artifacts.
+    try Task.checkCancellation()
+    return result
 }
 
 /// Same as `runProcess` but enforces a wall-clock timeout. On expiry the process

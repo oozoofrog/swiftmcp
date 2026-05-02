@@ -92,12 +92,25 @@ struct DiscardingOutputCancellationTests {
         let cancelStart = Date()
         task.cancel()
 
-        _ = try? await task.value
+        var caughtCancellation = false
+        do {
+            _ = try await task.value
+        } catch is CancellationError {
+            caughtCancellation = true
+        } catch {
+            // Any other error path also counts as "the call returned" — but the
+            // helper's contract under cancellation is specifically to throw
+            // CancellationError so resolvers don't keep running follow-up steps
+            // on a SIGTERM'd build.
+        }
         let elapsed = Date().timeIntervalSince(cancelStart)
         // Same 7s rationale as `taskCancellationTerminatesChildProcess`: the
         // PIDHolder hop + 50ms polling + waitUntilExit add variance, but the
         // cancel must not let us wait the full 60s.
         #expect(elapsed < 7.0, "cancellation should propagate well before the 60s timeout, got \(elapsed)s")
+        // Codex stop-time review: the helper must throw CancellationError so
+        // the calling resolver bails out before processing partial artifacts.
+        #expect(caughtCancellation, "expected CancellationError to propagate so resolvers stop after SIGTERM")
     }
 }
 
