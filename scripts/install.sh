@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# swiftmcp installer: clone, build, copy the `mcpswx` binary to a destination
-# directory, then print MCP client wire-up snippets. Designed to be safe to
-# pipe from `curl … | sh` — no sudo unless the user explicitly opted into a
-# system path via INSTALL_DIR=/usr/local/bin.
+# swiftmcp installer: build the `mcpswx` binary, copy it to a destination
+# directory, then register it with each MCP client we know about. Two modes,
+# detected automatically:
 #
-# Usage (defaults: install to ~/.local/bin, ref = main):
+#   - Local mode: invoked from inside an existing swiftmcp checkout
+#     (`Package.swift` in cwd or a parent declares the `mcpswx` target).
+#     Builds the current source tree as-is — no clone, no network.
+#   - Remote mode: invoked via `curl … | sh` outside a checkout, OR with
+#     SWIFTMCP_REF/SWIFTMCP_REPO explicitly set. Shallow-clones into a temp
+#     directory and builds from there.
+#
+# Either way the install destination defaults to ~/.local/bin so the
+# script never needs sudo. Override by passing INSTALL_DIR=/usr/local/bin.
+#
+# Usage (remote, defaults):
 #   curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | sh
+#
+# Local (from the repo):
+#   ./scripts/install.sh
 #
 # Override the install destination:
 #   curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 #
-# Pin to a specific commit / tag / branch:
+# Pin to a specific commit / tag / branch (forces remote mode):
 #   curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | SWIFTMCP_REF=v0.1.0 sh
 
 set -euo pipefail
 
 REPO_URL="${SWIFTMCP_REPO:-https://github.com/oozoofrog/swiftmcp.git}"
-REF="${SWIFTMCP_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BIN_NAME="mcpswx"
 
@@ -29,6 +40,24 @@ err() {
     exit 1
 }
 
+# Walk up from cwd looking for a swiftmcp `Package.swift`. We treat any
+# Package.swift that mentions the `mcpswx` executable target as a swiftmcp
+# checkout — the marker is unique enough that a sibling Swift project
+# wouldn't false-positive. Falls back to remote-mode clone if we never
+# find one.
+locate_local_checkout() {
+    local dir
+    dir="$(pwd -P)"
+    while [ "$dir" != "/" ]; do
+        if [ -f "$dir/Package.swift" ] && grep -q '"mcpswx"' "$dir/Package.swift" 2>/dev/null; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
 # Preflight: macOS host + Swift toolchain reachable.
 case "$(uname -s)" in
     Darwin) ;;
@@ -39,29 +68,41 @@ if ! command -v swift >/dev/null 2>&1; then
     err "swift not found on PATH. Install Xcode (https://developer.apple.com/xcode/) or a standalone toolchain (https://swift.org/install/), then re-run."
 fi
 
-if ! command -v git >/dev/null 2>&1; then
-    err "git not found on PATH."
-fi
-
 SWIFT_VERSION="$(swift --version | head -1)"
 log "swift: $SWIFT_VERSION"
 
-# Build out of a temp clone so the script is safe to pipe from curl on any
-# host, regardless of cwd. The clone is shallow + branch-pinned so the
-# bandwidth + disk footprint stays small.
-WORK_DIR="$(mktemp -d -t swiftmcp-install)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+# Mode selection. If the user explicitly set SWIFTMCP_REF or
+# SWIFTMCP_REPO, they want a specific remote source — skip the local
+# detection. Otherwise prefer an in-place checkout if one is reachable
+# from cwd, since that's what `./scripts/install.sh` is supposed to
+# install and it picks up any uncommitted edits the developer has staged.
+USE_LOCAL_CHECKOUT=""
+if [ -z "${SWIFTMCP_REF:-}" ] && [ -z "${SWIFTMCP_REPO:-}" ]; then
+    USE_LOCAL_CHECKOUT="$(locate_local_checkout 2>/dev/null || true)"
+fi
 
-log "cloning $REPO_URL@$REF into $WORK_DIR"
-git clone --depth 1 --branch "$REF" "$REPO_URL" "$WORK_DIR/swiftmcp" >/dev/null 2>&1 || \
-    err "git clone failed. If you pinned a non-default ref via SWIFTMCP_REF, confirm it exists on origin."
+if [ -n "$USE_LOCAL_CHECKOUT" ]; then
+    BUILD_ROOT="$USE_LOCAL_CHECKOUT"
+    log "local checkout detected at $BUILD_ROOT — building in place (no clone)"
+else
+    if ! command -v git >/dev/null 2>&1; then
+        err "git not found on PATH; required for remote-mode install."
+    fi
+    REF="${SWIFTMCP_REF:-main}"
+    WORK_DIR="$(mktemp -d -t swiftmcp-install)"
+    trap 'rm -rf "$WORK_DIR"' EXIT
+    log "cloning $REPO_URL@$REF into $WORK_DIR"
+    git clone --depth 1 --branch "$REF" "$REPO_URL" "$WORK_DIR/swiftmcp" >/dev/null 2>&1 || \
+        err "git clone failed. If you pinned a non-default ref via SWIFTMCP_REF, confirm it exists on origin."
+    BUILD_ROOT="$WORK_DIR/swiftmcp"
+fi
 
-cd "$WORK_DIR/swiftmcp"
+cd "$BUILD_ROOT"
 
-log "swift build -c release (this builds the mcpswx executable; a few minutes on a first run)"
+log "swift build -c release (this builds the mcpswx executable; a few minutes on a cold build)"
 swift build -c release
 
-BIN_PATH=".build/release/$BIN_NAME"
+BIN_PATH="$BUILD_ROOT/.build/release/$BIN_NAME"
 if [ ! -x "$BIN_PATH" ]; then
     err "build finished but $BIN_PATH is not executable; check the build log above for diagnostics."
 fi
