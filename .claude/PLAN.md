@@ -572,6 +572,7 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **swift-api-digester는 진단을 *stderr*로 출력**: 첫 probe에서 `2>&1`로 합쳐 보다가 도구는 stdout만 파싱했더니 모든 finding이 빈 배열로 떨어졌다. `-compiler-style-diags` 유무 무관하게 `/* Section */` 텍스트는 stderr로 emit. 도구의 `rawDiagnoseOutput`/parser 입력 모두 `process.standardError`. (Stage 4-1의 swiftc dump-ast가 stdout이었던 것과 정반대 — 둘 다 같은 toolchain이지만 sub-tool마다 다르므로 항상 probe로 확정해야 함.)
 - **`-json` flag 미작용**: swift-api-digester가 `-json -o file.json`을 받아도 같은 텍스트가 파일에 저장됨. JSON 출력 모드는 deserialize-diff 같은 다른 모드에만 의미 있고, diagnose-sdk는 텍스트 채널만. 텍스트 파서가 사실상 1차 채널.
 - **`WritableKeyPath`는 `Sendable` 아님**: section title → keypath dictionary로 파서 분기를 표현하려 했으나 Swift 6 strict concurrency가 static let에 거절. 내부 enum + switch로 해결 (12-way switch가 keypath dictionary보다 가독성도 더 나음).
+- **swiftPMPackage 분석 대상 모듈은 resolver의 부산물이 아님** (Codex review 지적): SwiftPMPackageResolver는 *target_dependencies가 비어 있으면* `swift build`를 건너뜀 → searchPaths empty. api_diff가 `searchPaths.first`로 분석 대상 .swiftmodule을 찾으려 하면 dep-less 패키지(가장 흔한 케이스 SamplePackage)에서 즉시 실패. 수정: swiftPMPackage 케이스를 file/directory와 같은 코드 path로 통합 — `resolved.inputFiles`를 받아 `swiftc -emit-module` 직접 호출, `resolved.searchPaths`(있을 시)는 의존 모듈 import용 -I로 전달. resolver 부산물에 의존하지 않으므로 dep 유무 모두 동작.
 
 ### Stage 4 후속 후보 (윤곽만)
 

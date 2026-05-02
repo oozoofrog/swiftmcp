@@ -80,6 +80,38 @@ struct ApiDiffTests {
         }
     }
 
+    /// Per Codex stop-time review: a plain SwiftPM package with no internal
+    /// `target_dependencies` causes the resolver to skip its pre-build step,
+    /// so `searchPaths` is empty. The earlier api_diff implementation pulled
+    /// the module dir out of `searchPaths.first` and immediately failed for
+    /// every dep-less package. The fix routes swiftPMPackage through the same
+    /// `swiftc -emit-module` path that file/directory inputs use, so the tool
+    /// works regardless of whether the package has internal deps.
+    @Test
+    func swiftPMPackageWithoutDependenciesSelfDiffsCleanly() async throws {
+        let tool = ApiDiffTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "baseline": .object([
+                "package": .string(fixturePath("SamplePackage")),
+                "target_name": .string("Lib")
+            ]),
+            "current": .object([
+                "package": .string(fixturePath("SamplePackage")),
+                "target_name": .string("Lib")
+            ]),
+            "module_name": .string("Lib")
+        ]))
+
+        #expect(response.isError == false)
+        let result = try decodeResult(ApiDiffTool.Result.self, response)
+        #expect(result.moduleName == "Lib")
+        // Self-diff of an unchanged package must report nothing.
+        #expect(result.summary.totalFindings == 0)
+        // Both dump JSONs must exist on disk.
+        #expect(FileManager.default.fileExists(atPath: result.baselineDumpPath))
+        #expect(FileManager.default.fileExists(atPath: result.currentDumpPath))
+    }
+
     @Test
     func xcodeInputCurrentlyRejected() async throws {
         let tool = ApiDiffTool(toolchain: ToolchainResolver())

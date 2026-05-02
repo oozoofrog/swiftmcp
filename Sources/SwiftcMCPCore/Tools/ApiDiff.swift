@@ -168,14 +168,31 @@ public struct ApiDiffTool: MCPTool {
     /// Build (or locate) the `.swiftmodule` for a BuildInput and return the
     /// directory swift-api-digester should pass via `-I`. The directory must
     /// contain `<moduleName>.swiftmodule`.
+    ///
+    /// Why we always emit the module ourselves for swiftPMPackage: the
+    /// SwiftPM resolver only triggers `swift build` when the chosen target has
+    /// internal `target_dependencies`. A plain library package with no deps
+    /// (the common case) returns an empty `searchPaths`, so reaching for
+    /// `searchPaths.first` would unconditionally fail the tool. Instead we
+    /// always run `swiftc -emit-module` against the resolver's `inputFiles`,
+    /// threading any `searchPaths` (dependency module dir) and other
+    /// resolver-supplied flags through `SwiftcInvocation.Options`. That way
+    /// dep-less packages work, dep-having packages still benefit from the
+    /// pre-built dependency modules, and file/directory inputs share exactly
+    /// the same code path.
     private func materializeModule(
         input: BuildInput,
         moduleName: String,
         scratch: PersistentScratch
     ) async throws -> String {
         switch input {
-        case .file, .directory:
+        case .file, .directory, .swiftPMPackage:
             let resolved = try await resolver.resolveArgs(for: input)
+            guard !resolved.inputFiles.isEmpty else {
+                throw MCPError.toolExecutionFailed(
+                    "BuildArgsResolver returned no inputFiles for the given input; cannot build a `.swiftmodule` for api_diff."
+                )
+            }
             let modulePath = scratch.directory.appending(
                 path: "\(moduleName).swiftmodule",
                 directoryHint: .notDirectory
@@ -195,22 +212,10 @@ public struct ApiDiffTool: MCPTool {
             )
             guard outcome.process.exitCode == 0 else {
                 throw MCPError.toolExecutionFailed(
-                    "swiftc -emit-module failed (exit=\(outcome.process.exitCode)): \(truncate(outcome.process.standardError))"
+                    "swiftc -emit-module failed (exit=\(outcome.process.exitCode)) for module '\(moduleName)': \(truncate(outcome.process.standardError))"
                 )
             }
             return scratch.directory.path
-
-        case .swiftPMPackage:
-            // The SwiftPM resolver runs `swift build` and exposes the modules
-            // dir via `searchPaths`. The first entry is `<bin>/Modules` which
-            // contains every target's `.swiftmodule`.
-            let resolved = try await resolver.resolveArgs(for: input)
-            guard let modulesDir = resolved.searchPaths.first else {
-                throw MCPError.toolExecutionFailed(
-                    "SwiftPM resolver returned no searchPaths; cannot locate `.swiftmodule` for api_diff."
-                )
-            }
-            return modulesDir
 
         case .xcodeProject, .xcodeWorkspace:
             throw MCPError.invalidParams(
