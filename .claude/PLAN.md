@@ -556,12 +556,29 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **workspace는 *referenced pbxproj* 모두 추적해야** (Codex review 다섯 번째 지적): xcodeWorkspace의 fingerprint가 `contents.xcworkspacedata`만 추적하면, 사용자가 Xcode UI에서 *referenced project*의 source를 추가/제거할 때 pbxproj는 변경되지만 contents.xcworkspacedata는 변경 없음 → silent miss. 수정: contents.xcworkspacedata XML을 정규식 파싱(`<FileRef location="…"/>`)해서 referenced `.xcodeproj` 경로 추출 + 각 `project.pbxproj`를 fingerprint에 추가. location prefix 처리: `group:`(workspace 부모 dir 기준), `container:`(workspace 자체 기준), `absolute:`(절대 경로), `self:`(workspace 자체).
 - **`StaticPackageResolver` test stub 패턴**: 외부 CLI(`swift package describe`)를 실제 호출하지 않고 fingerprint만 검증하고 싶을 때, BuildArgsResolver 인터페이스를 conform하는 test-only stub을 두면 단위 테스트가 millisecond 단위로 빠르고 결정성도 확보. plan §10의 캐싱 정책 결정 후속 작업에 재사용 가능 패턴.
 
+### Stage 4-4 (완료) — `api_diff`: Swift API breakage 검출
+
+251 tests / 47 suites 통과. PLAN §8 후속 후보 중 *API diff*. `swift-api-digester` CLI를 wrapping해 두 시점의 모듈 API surface를 비교하고 카테고리별 변화를 구조화 결과로 반환.
+
+수행 작업:
+1. ✓ `Toolchain/ApiDigesterParser.swift` — `-diagnose-sdk` 텍스트 출력을 12개 카테고리(removed/moved/renamed/type/declAttribute/fixedLayout/protocolConformance/protocolRequirement/classInheritance/genericSignature/rawRepresentable/others)로 파싱. 모르는 헤더는 `others` 버킷에 떨어뜨려 toolchain 업그레이드 시 silent drop 회피.
+2. ✓ `Tools/ApiDiff.swift` — 두 BuildInput(baseline+current) → 각 입력에 대해 `.swiftmodule` materialize → swift-api-digester `-dump-sdk` 두 번 → `-diagnose-sdk` 한 번 → parser → 응답.
+3. ✓ `.swiftmodule` 산출 전략: file/directory는 `swiftc -emit-module` 직접 호출 후 PersistentScratch에 둠, swiftPMPackage는 SwiftPMPackageResolver의 searchPaths 첫 항목 재사용. xcodeProject/xcodeWorkspace는 `MCPError.invalidParams`로 1차 거절.
+4. ✓ Mcpswx 등록 (cachedResolver 주입, 총 14 도구).
+5. ✓ Fixture: `Tests/Fixtures/ApiDiff/V{1,2}/Lib.swift` — V1=Counter+helloAdd, V2=Counter+doubled+newApi (helloAdd removed).
+6. ✓ 단위 6 (parser 12 섹션, 빈 입력, 헤더 only, 다중 finding, "API breakage:" prefix 보존, unknown section→others) + 통합 5 (V1↔V2 removed, ABI 모드 added, 동일 버전 empty, module_name 누락 reject, xcode 케이스 reject).
+
+학습 사항:
+- **swift-api-digester는 진단을 *stderr*로 출력**: 첫 probe에서 `2>&1`로 합쳐 보다가 도구는 stdout만 파싱했더니 모든 finding이 빈 배열로 떨어졌다. `-compiler-style-diags` 유무 무관하게 `/* Section */` 텍스트는 stderr로 emit. 도구의 `rawDiagnoseOutput`/parser 입력 모두 `process.standardError`. (Stage 4-1의 swiftc dump-ast가 stdout이었던 것과 정반대 — 둘 다 같은 toolchain이지만 sub-tool마다 다르므로 항상 probe로 확정해야 함.)
+- **`-json` flag 미작용**: swift-api-digester가 `-json -o file.json`을 받아도 같은 텍스트가 파일에 저장됨. JSON 출력 모드는 deserialize-diff 같은 다른 모드에만 의미 있고, diagnose-sdk는 텍스트 채널만. 텍스트 파서가 사실상 1차 채널.
+- **`WritableKeyPath`는 `Sendable` 아님**: section title → keypath dictionary로 파서 분기를 표현하려 했으나 Swift 6 strict concurrency가 static let에 거절. 내부 enum + switch로 해결 (12-way switch가 keypath dictionary보다 가독성도 더 나음).
+
 ### Stage 4 후속 후보 (윤곽만)
 
-- API diff (`api_diff`) — `-compare-to-baseline-path` 사용.
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
-- Stage 4-2 후속: 디렉토리/모듈 입력 슬라이싱 (현재는 file 단일).
-- Stage 4-3 후속: cache invalidation에 manifest mtime 추가 (현재는 path 존재 검증만).
+- Stage 4-2 후속: 디렉토리/모듈 입력 슬라이싱 (slice_function 현재는 file 단일).
+- Stage 4-3 후속: cache invalidation에 file content hash 추가 (현재는 path mtime만).
+- Stage 4-4 후속: `api_diff`의 xcodeProject/xcodeWorkspace 입력 지원 — `.swiftmodule` 위치 추출 정확도 probe 필요.
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 
