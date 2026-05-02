@@ -85,33 +85,59 @@ case ":$PATH:" in
 esac
 
 # Optional convenience: register with Claude Code automatically if the CLI
-# is available. Skipped silently otherwise so the script stays idempotent
-# on hosts that don't run Claude.
+# is available. We use `-s user` so the entry persists across every project
+# the user opens — `claude mcp add` without -s defaults to local (project)
+# scope, which would only register the server inside whatever cwd the
+# install script happened to run in (typically a temp dir). Skipped
+# silently otherwise so the script stays idempotent on hosts that don't
+# run Claude.
 if command -v claude >/dev/null 2>&1; then
-    if claude mcp list 2>/dev/null | grep -q '^swiftmcp\b'; then
-        log "Claude Code already has a 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove swiftmcp && claude mcp add swiftmcp $INSTALL_PATH"
+    if claude mcp list -s user 2>/dev/null | grep -q '^swiftmcp\b'; then
+        log "Claude Code already has a user-scoped 'swiftmcp' entry; skipping registration. Re-register with: claude mcp remove -s user swiftmcp && claude mcp add -s user swiftmcp $INSTALL_PATH"
     else
-        log "registering with Claude Code"
-        if ! claude mcp add swiftmcp "$INSTALL_PATH"; then
-            log "claude mcp add failed; register manually: claude mcp add swiftmcp $INSTALL_PATH"
+        log "registering with Claude Code (user scope)"
+        if ! claude mcp add -s user swiftmcp "$INSTALL_PATH"; then
+            log "claude mcp add failed; register manually: claude mcp add -s user swiftmcp $INSTALL_PATH"
         fi
     fi
 else
-    log "claude CLI not found; register manually with: claude mcp add swiftmcp $INSTALL_PATH"
+    log "claude CLI not found; register manually with: claude mcp add -s user swiftmcp $INSTALL_PATH"
+fi
+
+# Codex CLI uses ~/.codex/config.toml with [mcp_servers.<name>] sections.
+# The file may not exist yet (fresh Codex install); creating it is safe —
+# Codex tolerates an otherwise-empty config.toml. We append idempotently:
+# if a `[mcp_servers.swiftmcp]` header already lives in the file, skip;
+# otherwise append a fresh section pointing at $INSTALL_PATH. We don't
+# attempt to update an existing section's command field because a TOML
+# rewrite without a TOML parser is fragile; users who relocate the binary
+# can run the install again with the new INSTALL_DIR + delete the old
+# section, or edit the file directly.
+CODEX_CONFIG_DIR="$HOME/.codex"
+CODEX_CONFIG_PATH="$CODEX_CONFIG_DIR/config.toml"
+mkdir -p "$CODEX_CONFIG_DIR"
+if [ -f "$CODEX_CONFIG_PATH" ] && grep -q '^\[mcp_servers\.swiftmcp\]' "$CODEX_CONFIG_PATH"; then
+    log "Codex CLI config already has '[mcp_servers.swiftmcp]'; leaving it alone. Edit $CODEX_CONFIG_PATH if you need to point at a different binary."
+else
+    log "registering with Codex CLI ($CODEX_CONFIG_PATH)"
+    cat >>"$CODEX_CONFIG_PATH" <<EOF
+
+[mcp_servers.swiftmcp]
+command = "$INSTALL_PATH"
+EOF
 fi
 
 cat <<EOF
 
-Done. Next steps for other MCP clients:
-
-  Claude Desktop — add to ~/Library/Application Support/Claude/claude_desktop_config.json:
-    {
-      "mcpServers": {
-        "swiftmcp": {
-          "command": "$INSTALL_PATH"
-        }
+Done. Claude Desktop is the one MCP client without an automated step here —
+add this to ~/Library/Application Support/Claude/claude_desktop_config.json:
+  {
+    "mcpServers": {
+      "swiftmcp": {
+        "command": "$INSTALL_PATH"
       }
     }
-  Then restart Claude Desktop.
+  }
+Then restart Claude Desktop.
 
 EOF
