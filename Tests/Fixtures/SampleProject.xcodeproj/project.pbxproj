@@ -1,0 +1,155 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 55;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AAA0001 /* Sample.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAA0002 /* Sample.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AAA0002 /* Sample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sample.swift; sourceTree = "<group>"; };
+		AAA0003 /* libSample.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libSample.a; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		AAA0010 = {
+			isa = PBXGroup;
+			children = (
+				AAA0011 /* Sources */,
+				AAA0012 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AAA0011 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				AAA0002 /* Sample.swift */,
+			);
+			path = SampleProject/Sources;
+			sourceTree = "<group>";
+		};
+		AAA0012 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AAA0003 /* libSample.a */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AAA0020 /* Sample */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AAA0030 /* Build configuration list for PBXNativeTarget "Sample" */;
+			buildPhases = (
+				AAA0040 /* Sources */,
+			);
+			dependencies = (
+			);
+			name = Sample;
+			productName = Sample;
+			productReference = AAA0003 /* libSample.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AAA0040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AAA0001 /* Sample.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXProject section */
+		AAA0050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = AAA0060 /* Build configuration list for PBXProject "SampleProject" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = AAA0010;
+			productRefGroup = AAA0012 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AAA0020 /* Sample */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCConfigurationList section */
+		AAA0030 /* Build configuration list for PBXNativeTarget "Sample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AAA0031 /* Debug */,
+				AAA0032 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AAA0060 /* Build configuration list for PBXProject "SampleProject" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AAA0061 /* Debug */,
+				AAA0062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCBuildConfiguration section */
+		AAA0031 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Sample;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Debug;
+		};
+		AAA0032 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Sample;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Release;
+		};
+		AAA0061 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ONLY_ACTIVE_ARCH = YES;
+			};
+			name = Debug;
+		};
+		AAA0062 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+	};
+	rootObject = AAA0050 /* Project object */;
+}

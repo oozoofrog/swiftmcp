@@ -20,32 +20,65 @@ public struct TimedProcessResult: Sendable, Equatable {
     public let timedOut: Bool
 }
 
-/// Side channel for delivering parent-task cancellation into a detached process-running task.
-/// `withTaskCancellationHandler.onCancel` is sync and cannot await actors, so we hold the pid
-/// behind an NSLock and signal SIGTERM directly from the cancellation handler.
-final class PIDHolder: @unchecked Sendable {
+/// Side channel for delivering parent-task cancellation into the detached process-running
+/// task. Modeled as an `actor` to keep all state mutation serialized — this project does
+/// not use `NSLock` / `os_unfair_lock` / atomics; concurrency safety is purely via actor
+/// isolation.
+///
+/// `markCancelled()` and `set()` interlock so a cancel arriving *before* the child is
+/// even spawned still results in SIGTERM the moment the pid is registered. Without that
+/// sticky flag, a heavily loaded executor can let the parent's cancel fire while
+/// `Task.detached` is still queued — `onCancel` then sees pid=0, the signal vanishes,
+/// and the child runs to natural completion.
+///
+/// `onCancel` closures are synchronous (cannot await an actor). We bridge by spawning an
+/// unstructured `Task` from inside `onCancel` that awaits the actor. This adds a tiny
+/// scheduling delay but is `lock`-free; SIGTERM still reaches the child well before the
+/// child's own wall-clock or natural exit.
+actor PIDHolder {
     private var pid: pid_t = 0
-    private let lock = NSLock()
+    private var cancelled: Bool = false
 
+    /// Register the pid of a freshly-spawned child. If a cancel was already delivered
+    /// (race with `onCancel` firing before this call), immediately raise SIGTERM.
     func set(_ value: pid_t) {
-        lock.lock()
         pid = value
-        lock.unlock()
+        if cancelled && value > 0 {
+            #if canImport(Darwin)
+            kill(value, SIGTERM)
+            #endif
+        }
     }
 
     func clear() {
-        set(0)
+        pid = 0
+        // We deliberately don't reset `cancelled`; the holder is per-call and the
+        // cancellation state is sticky for the lifetime of the run.
     }
 
-    func get() -> pid_t {
-        lock.lock()
-        defer { lock.unlock() }
-        return pid
+    /// Mark the call as cancelled. If the child is already running, signal it; otherwise
+    /// the eventual `set()` will pick up the pending cancel and signal the child as soon
+    /// as it becomes addressable.
+    func markCancelled() {
+        cancelled = true
+        if pid > 0 {
+            #if canImport(Darwin)
+            kill(pid, SIGTERM)
+            #endif
+        }
     }
 }
 
 public enum ProcessRunnerError: Error, Sendable {
     case launchFailed(String)
+}
+
+/// Reference-typed mutable slot for capturing pipe reads from DispatchQueue
+/// blocks. We can't pass `inout Data` into a `@Sendable` queue closure, and
+/// the project bans NSLock/atomics — but DispatchGroup-paired blocks already
+/// give us happens-before ordering, so a class wrapper is enough.
+final class DataBox: @unchecked Sendable {
+    var value: Data = Data()
 }
 
 /// Run an external process to completion, capturing stdout and stderr.
@@ -74,6 +107,13 @@ public func runProcess(
             }
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
+            // Sever stdin inheritance. Otherwise the child gets the test
+            // bundle's (or any parent's) stdin, which has hung
+            // `swift-driver -dump-ast` invocations on macOS 26.x in
+            // multi-input mode — driver appears to probe stdin during its
+            // batch-frontend setup and never returns. Pointing at
+            // /dev/null gives an immediate EOF for any read attempt.
+            process.standardInput = FileHandle.nullDevice
 
             do {
                 try process.run()
@@ -81,12 +121,39 @@ public func runProcess(
                 throw ProcessRunnerError.launchFailed("\(error)")
             }
 
-            holder.set(process.processIdentifier)
-            defer { holder.clear() }
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
 
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            // Drain both pipes concurrently. swiftc multi-file `-dump-ast`
+            // routes the entire AST to stderr (single-file uses stdout), so
+            // a sequential read pattern would block reading stdout while
+            // stderr fills its pipe buffer and the child stalls writing.
+            // We use two global-queue blocks plus `DispatchGroup.notify`
+            // bridged into a continuation — that keeps the synchronously
+            // blocking `readDataToEndOfFile` calls off the cooperation
+            // pool (they each park a global-queue thread) and still hands
+            // control back to the async caller without `group.wait()` (which
+            // is unavailable in async contexts on Swift 6).
+            let stdoutBox = DataBox()
+            let stderrBox = DataBox()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let group = DispatchGroup()
+                let queue = DispatchQueue.global(qos: .userInitiated)
+                queue.async(group: group) {
+                    stdoutBox.value = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+                queue.async(group: group) {
+                    stderrBox.value = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+                group.notify(queue: queue) {
+                    continuation.resume()
+                }
+            }
             process.waitUntilExit()
+            let stdoutData = stdoutBox.value
+            let stderrData = stderrBox.value
 
             return ProcessResult(
                 exitCode: process.terminationStatus,
@@ -95,13 +162,200 @@ public func runProcess(
             )
         }.value
     } onCancel: {
-        let pid = holder.get()
-        if pid > 0 {
-            #if canImport(Darwin)
-            kill(pid, SIGTERM)
-            #endif
-        }
+        // onCancel is synchronous and cannot await an actor. Spawn an unstructured Task
+        // that delivers the cancel to the holder. The Task's body awaits markCancelled
+        // — by then either the child is running (immediate SIGTERM) or set() will
+        // observe the sticky cancelled flag when the spawn finally lands.
+        Task { await holder.markCancelled() }
     }
+}
+
+/// Wall-clock-bounded process run that *does not capture* stdout/stderr. The child's
+/// streams go to `FileHandle.nullDevice`, so we never read pipes — useful for tools
+/// that wedge their stdio after success (Xcode 26.2+ xcodebuild keeps stdout open
+/// via its SWBBuildService child even after `BUILD SUCCEEDED`, which hangs any
+/// `readDataToEndOfFile()` reader). Parent-task cancellation is propagated to the
+/// child via SIGTERM exactly like `runProcess` (same `PIDHolder` actor + sticky
+/// cancel handshake), so cancelling the calling Task tears the child down.
+///
+/// Returns `timedOut == true` if the child was still running at the deadline; we
+/// then SIGTERM, give a 1-second grace, and SIGKILL if needed. The exit code is
+/// reported but callers typically ignore it (the existence/absence of the child's
+/// real side-effect — a build artifact, a generated file — is the real signal).
+public func runProcessWithTimeoutDiscardingOutput(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]? = nil,
+    workingDirectory: URL? = nil,
+    timeout: TimeInterval
+) async throws -> (exitCode: Int32, timedOut: Bool) {
+    let holder = PIDHolder()
+    let result = try await withTaskCancellationHandler {
+        try await Task.detached { @Sendable in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            if let environment {
+                process.environment = environment
+            }
+            if let workingDirectory {
+                process.currentDirectoryURL = workingDirectory
+            }
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+            } catch {
+                throw ProcessRunnerError.launchFailed("\(error)")
+            }
+
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
+
+            let pollInterval: TimeInterval = 0.05
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+            }
+
+            var timedOut = false
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+                let graceDeadline = Date().addingTimeInterval(1.0)
+                while process.isRunning && Date() < graceDeadline {
+                    try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+                }
+                #if canImport(Darwin)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                #endif
+                process.waitUntilExit()
+            }
+            return (process.terminationStatus, timedOut)
+        }.value
+    } onCancel: {
+        // See note in runProcess: onCancel is synchronous; we hop into the actor via an
+        // unstructured Task.
+        Task { await holder.markCancelled() }
+    }
+    // Parent-task cancel signals SIGTERM via PIDHolder, which lets the child exit
+    // and the detached Task return normally — but if we just hand the result back,
+    // the caller continues running follow-up steps (e.g. xcodebuild
+    // -showBuildSettings, SwiftFileList read) on a build that was forcibly torn
+    // down. Throwing `CancellationError` here ensures the surrounding resolver
+    // bails out immediately so cancelled api_diff calls don't process partial
+    // build artifacts.
+    try Task.checkCancellation()
+    return result
+}
+
+/// Wall-clock-bounded process run that captures stdout *and* stderr into a single
+/// on-disk file at `logURL`. Used when we need both the SWBBuildService-hang
+/// resilience of `runProcessWithTimeoutDiscardingOutput` AND the ability to
+/// inspect xcodebuild's stdout afterwards (e.g. parsing
+/// `-showBuildTimingSummary`). Routing both streams to a file means there is
+/// no pipe to wedge — even if SWBBuildService keeps the inherited FD open
+/// past `BUILD SUCCEEDED`, the parent never blocks reading; the kernel
+/// flushes child writes to the file and we read the path post-exit.
+///
+/// Cancellation contract matches the discarding variant: parent-task cancel
+/// → PIDHolder SIGTERM → optional SIGKILL escalation → `Task.checkCancellation()`
+/// throws `CancellationError` so callers don't continue on a torn-down child.
+///
+/// Returns `(exitCode, timedOut)`. The log file is created with the parent's
+/// permissions; callers typically pass a `PersistentScratch` URL so the file
+/// stays around for the response payload.
+public func runProcessWithTimeoutLoggingTo(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]? = nil,
+    workingDirectory: URL? = nil,
+    logURL: URL,
+    timeout: TimeInterval
+) async throws -> (exitCode: Int32, timedOut: Bool) {
+    // Create / truncate the log file before spawning so the child has a
+    // valid FD to inherit. We hand the FileHandle (write end) to the child;
+    // the parent doesn't need it once the process is launched.
+    let fm = FileManager.default
+    if !fm.fileExists(atPath: logURL.path) {
+        fm.createFile(atPath: logURL.path, contents: nil, attributes: nil)
+    } else {
+        // Truncate any prior content so reruns don't accumulate.
+        try Data().write(to: logURL)
+    }
+    let logHandle: FileHandle
+    do {
+        logHandle = try FileHandle(forWritingTo: logURL)
+    } catch {
+        throw ProcessRunnerError.launchFailed("cannot open log file at \(logURL.path): \(error)")
+    }
+
+    let holder = PIDHolder()
+    let result = try await withTaskCancellationHandler {
+        try await Task.detached { @Sendable in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            if let environment {
+                process.environment = environment
+            }
+            if let workingDirectory {
+                process.currentDirectoryURL = workingDirectory
+            }
+            process.standardOutput = logHandle
+            process.standardError = logHandle
+            // Sever stdin inheritance for the same reason runProcess does.
+            process.standardInput = FileHandle.nullDevice
+
+            do {
+                try process.run()
+            } catch {
+                throw ProcessRunnerError.launchFailed("\(error)")
+            }
+
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
+
+            let pollInterval: TimeInterval = 0.05
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+            }
+
+            var timedOut = false
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+                let graceDeadline = Date().addingTimeInterval(1.0)
+                while process.isRunning && Date() < graceDeadline {
+                    try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+                }
+                #if canImport(Darwin)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                #endif
+                process.waitUntilExit()
+            }
+            // Close our writer end so any pending kernel buffers flush
+            // before the caller reads the file. The child process inherits
+            // its own copy of the FD via posix_spawn, so closing ours
+            // doesn't disturb anything that's already exited.
+            try? logHandle.close()
+            return (process.terminationStatus, timedOut)
+        }.value
+    } onCancel: {
+        Task { await holder.markCancelled() }
+    }
+    try Task.checkCancellation()
+    return result
 }
 
 /// Same as `runProcess` but enforces a wall-clock timeout. On expiry the process
@@ -138,8 +392,10 @@ public func runProcessWithTimeout(
                 throw ProcessRunnerError.launchFailed("\(error)")
             }
 
-            holder.set(process.processIdentifier)
-            defer { holder.clear() }
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
 
             let pollInterval: TimeInterval = 0.05
             let deadline = Date().addingTimeInterval(timeout)
@@ -174,11 +430,8 @@ public func runProcessWithTimeout(
             )
         }.value
     } onCancel: {
-        let pid = holder.get()
-        if pid > 0 {
-            #if canImport(Darwin)
-            kill(pid, SIGTERM)
-            #endif
-        }
+        // See note in runProcess: onCancel is synchronous; we hop into the actor via an
+        // unstructured Task.
+        Task { await holder.markCancelled() }
     }
 }

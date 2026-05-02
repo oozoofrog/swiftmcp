@@ -26,7 +26,7 @@ struct CompileStatsTests {
 
         let tool = CompileStatsTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path)
+            "input": .object(["file": .string(url.path)])
         ]))
 
         #expect(response.isError == false)
@@ -47,7 +47,7 @@ struct CompileStatsTests {
 
         let tool = CompileStatsTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "top": .integer(5)
         ]))
         let result = try decodeResult(CompileStatsTool.Result.self, response)
@@ -59,14 +59,14 @@ struct CompileStatsTests {
     }
 
     @Test
-    func missingFileSurfacesAsCompilerError() async throws {
+    func missingFileRejectedByResolver() async throws {
         let tool = CompileStatsTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object([
-            "file": .string("/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift")
-        ]))
-        let result = try decodeResult(CompileStatsTool.Result.self, response)
-        #expect(response.isError == false)
-        #expect(result.compilerExitCode != 0)
+        let bogus = "/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"
+        await #expect(throws: MCPError.self) {
+            try await tool.call(arguments: .object([
+                "input": .object(["file": .string(bogus)])
+            ]))
+        }
     }
 
     @Test

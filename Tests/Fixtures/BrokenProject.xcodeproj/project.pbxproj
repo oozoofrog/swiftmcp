@@ -1,0 +1,155 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 55;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B0001 /* Broken.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0002 /* Broken.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B0002 /* Broken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Broken.swift; sourceTree = "<group>"; };
+		B0003 /* libBroken.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libBroken.a; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		B0010 = {
+			isa = PBXGroup;
+			children = (
+				B0011 /* Sources */,
+				B0012 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B0011 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				B0002 /* Broken.swift */,
+			);
+			path = BrokenProject/Sources;
+			sourceTree = "<group>";
+		};
+		B0012 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B0003 /* libBroken.a */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B0020 /* Broken */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B0030 /* Build configuration list for PBXNativeTarget "Broken" */;
+			buildPhases = (
+				B0040 /* Sources */,
+			);
+			dependencies = (
+			);
+			name = Broken;
+			productName = Broken;
+			productReference = B0003 /* libBroken.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B0040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0001 /* Broken.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXProject section */
+		B0050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = B0060 /* Build configuration list for PBXProject "BrokenProject" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = B0010;
+			productRefGroup = B0012 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B0020 /* Broken */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCConfigurationList section */
+		B0030 /* Build configuration list for PBXNativeTarget "Broken" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B0031 /* Debug */,
+				B0032 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B0060 /* Build configuration list for PBXProject "BrokenProject" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B0061 /* Debug */,
+				B0062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCBuildConfiguration section */
+		B0031 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Broken;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Debug;
+		};
+		B0032 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = Broken;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SWIFT_VERSION = 6.0;
+				SDKROOT = macosx;
+				EXECUTABLE_PREFIX = lib;
+			};
+			name = Release;
+		};
+		B0061 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ONLY_ACTIVE_ARCH = YES;
+			};
+			name = Debug;
+		};
+		B0062 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+	};
+	rootObject = B0050 /* Project object */;
+}

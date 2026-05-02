@@ -61,3 +61,50 @@ func makeServer(registry: ToolRegistry = ToolRegistry()) -> Server {
         registry: registry
     )
 }
+
+/// Spy `BuildArgsResolver` that records how many times the wrapped resolver
+/// was invoked. Used to verify `CachedBuildArgsResolver` hit/miss behaviour.
+/// No locks: actor isolation serializes both reads and writes of `callCount`.
+actor CountingResolver: BuildArgsResolver {
+    private(set) var callCount: Int = 0
+    let inner: BuildArgsResolver
+
+    init(_ inner: BuildArgsResolver = DefaultBuildArgsResolver()) {
+        self.inner = inner
+    }
+
+    func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
+        callCount += 1
+        return try await inner.resolveArgs(for: input)
+    }
+}
+
+/// Stub `BuildArgsResolver` that returns a synthetic `ResolvedBuildArgs` for
+/// `.swiftPMPackage` inputs without invoking the SwiftPM CLI. Useful for tests
+/// that exercise `CachedBuildArgsResolver`'s fingerprint behaviour around
+/// `Package.swift` mtime, where the real `swift package describe` cost would
+/// dominate and obscure the fingerprint signal.
+struct StaticPackageResolver: BuildArgsResolver {
+    let inputFiles: [String]
+    let moduleName: String?
+
+    func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
+        ResolvedBuildArgs(
+            inputFiles: inputFiles,
+            moduleName: moduleName,
+            target: input.target
+        )
+    }
+}
+
+/// Resolves `Tests/Fixtures/<name>/` relative to the source-file location of the caller.
+/// Test targets don't own a resource bundle in this package, so fixtures are read by path.
+func fixturePath(_ relative: String, file: StaticString = #filePath) -> String {
+    let testFile = URL(fileURLWithPath: "\(file)", isDirectory: false)
+    // Tests/SwiftcMCPCoreTests/<file>.swift  ->  Tests/Fixtures/<relative>
+    let fixturesRoot = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appending(path: "Fixtures", directoryHint: .isDirectory)
+    return fixturesRoot.appending(path: relative).path
+}

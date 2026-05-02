@@ -19,7 +19,9 @@ struct EmitIRTests {
         defer { scratch.dispose() }
 
         let tool = EmitIRTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object(["file": .string(url.path)]))
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(url.path)])
+        ]))
 
         let result = try decodeResult(EmitIRTool.Result.self, response)
         #expect(result.stage == "ir")
@@ -37,7 +39,7 @@ struct EmitIRTests {
 
         let tool = EmitIRTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "stage": .string("bc")
         ]))
 
@@ -52,7 +54,7 @@ struct EmitIRTests {
         let tool = EmitIRTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "stage": .string("nope")
             ]))
         }

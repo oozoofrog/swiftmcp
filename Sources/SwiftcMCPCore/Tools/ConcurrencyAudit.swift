@@ -1,6 +1,6 @@
 import Foundation
 
-/// `concurrency_audit`: type-check a Swift file with strict-concurrency enabled and
+/// `concurrency_audit`: type-check Swift inputs with strict-concurrency enabled and
 /// classify the resulting diagnostics by group + severity. Group identifiers come from
 /// swiftc's `[#GroupName]` suffix (e.g. `SendableClosureCaptures`); diagnostics with no
 /// group land under `(unknown)` so the per-group sums always match `totalFindings`.
@@ -19,11 +19,13 @@ public struct ConcurrencyAuditTool: MCPTool {
         public let compilerStderr: String?
     }
 
-    private let toolchain: ToolchainResolver
+    private let invocation: SwiftcInvocation
+    private let resolver: BuildArgsResolver
     private let parser = DiagnosticParser()
 
-    public init(toolchain: ToolchainResolver) {
-        self.toolchain = toolchain
+    public init(toolchain: ToolchainResolver, resolver: BuildArgsResolver = DefaultBuildArgsResolver()) {
+        self.invocation = SwiftcInvocation(resolver: toolchain)
+        self.resolver = resolver
     }
 
     public var definition: ToolDefinition {
@@ -31,7 +33,7 @@ public struct ConcurrencyAuditTool: MCPTool {
             name: "concurrency_audit",
             title: "Concurrency Audit",
             description: """
-            Type-check a Swift source file with `-strict-concurrency=<level> -warn-concurrency` \
+            Type-check Swift inputs with `-strict-concurrency=<level> -warn-concurrency` \
             and classify the resulting diagnostics by `[#Group]` suffix + severity. Useful as a \
             first-pass triage for Swift 6 migration: counts of Sendable / actor-isolation / \
             concurrency violations grouped for at-a-glance scanning, with the per-finding \
@@ -41,69 +43,56 @@ public struct ConcurrencyAuditTool: MCPTool {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "file": .object([
-                        "type": .string("string"),
-                        "description": .string("Path to a Swift source file.")
-                    ]),
+                    "input": BuildInput.jsonSchemaProperty,
                     "level": .object([
                         "type": .string("string"),
                         "description": .string("`-strict-concurrency=` value: `minimal`, `targeted`, or `complete`. Default `complete`."),
                         "default": .string("complete")
-                    ]),
-                    "target": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional target triple.")
                     ])
                 ]),
-                "required": .array([.string("file")])
+                "required": .array([.string("input")])
             ])
         )
     }
 
     public func call(arguments: JSONValue?) async throws -> CallToolResult {
-        guard case .object(let dict) = arguments,
-              let file = dict["file"]?.asString, !file.isEmpty
-        else {
-            throw MCPError.invalidParams("`file` argument is required and must be a non-empty string")
+        guard case .object(let dict) = arguments else {
+            throw MCPError.invalidParams("arguments must be an object")
         }
+        let input = try BuildInput.decode(dict["input"])
         let level = dict["level"]?.asString ?? "complete"
         guard ["minimal", "targeted", "complete"].contains(level) else {
             throw MCPError.invalidParams("`level` must be one of: minimal, targeted, complete")
         }
-        let target = dict["target"]?.asString
 
-        let resolved = try await toolchain.resolve()
-
-        var arguments: [String] = [
-            "-typecheck",
-            "-strict-concurrency=\(level)",
-            "-warn-concurrency"
-        ]
-        if let target {
-            arguments.append(contentsOf: ["-target", target])
-        }
-        arguments.append(file)
+        let resolved = try await resolver.resolveArgs(for: input)
 
         let start = Date()
-        let processResult = try await runProcess(
-            executable: resolved.swiftcPath,
-            arguments: arguments
+        let outcome = try await invocation.run(
+            modeArgs: [
+                "-typecheck",
+                "-strict-concurrency=\(level)",
+                "-warn-concurrency"
+            ],
+            inputFiles: resolved.inputFiles,
+            outputFile: nil,
+            options: .init(resolved: resolved)
         )
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
 
-        let findings = parser.parse(processResult.standardError)
+        let findings = parser.parse(outcome.process.standardError)
         let summary = makeSummary(findings: findings)
 
         let result = Result(
             meta: .init(
-                toolchain: .init(path: resolved.swiftcPath, version: resolved.version),
-                target: target,
+                toolchain: .init(path: outcome.toolchain.swiftcPath, version: outcome.toolchain.version),
+                target: input.target,
                 durationMs: durationMs
             ),
             summary: summary,
             findings: findings,
-            compilerExitCode: processResult.exitCode,
-            compilerStderr: processResult.standardError.isEmpty ? nil : processResult.standardError
+            compilerExitCode: outcome.process.exitCode,
+            compilerStderr: outcome.process.standardError.isEmpty ? nil : outcome.process.standardError
         )
 
         let text = try renderJSON(result)

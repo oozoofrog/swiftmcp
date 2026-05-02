@@ -23,7 +23,7 @@ struct FindSlowTypecheckTests {
 
         let tool = FindSlowTypecheckTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "expression_threshold_ms": .integer(1),
             "function_threshold_ms": .integer(1)
         ]))
@@ -43,7 +43,7 @@ struct FindSlowTypecheckTests {
 
         let tool = FindSlowTypecheckTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "expression_threshold_ms": .integer(60_000),
             "function_threshold_ms": .integer(60_000)
         ]))
@@ -55,18 +55,14 @@ struct FindSlowTypecheckTests {
     }
 
     @Test
-    func missingFileSurfacesAsCompilerError() async throws {
+    func missingFileRejectedByResolver() async throws {
         let tool = FindSlowTypecheckTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object([
-            "file": .string("/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift")
-        ]))
-
-        // Tool result remains success; compiler diagnostics live in compilerExitCode.
-        #expect(response.isError == false)
-        let text = try #require(response.content.first?.text)
-        let result = try JSONDecoder().decode(FindSlowTypecheckTool.Result.self, from: Data(text.utf8))
-        #expect(result.compilerExitCode != 0)
-        #expect(result.findings.isEmpty)
+        let bogus = "/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"
+        await #expect(throws: MCPError.self) {
+            try await tool.call(arguments: .object([
+                "input": .object(["file": .string(bogus)])
+            ]))
+        }
     }
 
     @Test

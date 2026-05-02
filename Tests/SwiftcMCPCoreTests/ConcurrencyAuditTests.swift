@@ -44,7 +44,7 @@ struct ConcurrencyAuditTests {
 
         let tool = ConcurrencyAuditTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "level": .string("complete")
         ]))
 
@@ -68,7 +68,7 @@ struct ConcurrencyAuditTests {
 
         let tool = ConcurrencyAuditTool(toolchain: ToolchainResolver())
         let response = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "level": .string("complete")
         ]))
         let result = try decodeResult(ConcurrencyAuditTool.Result.self, response)
@@ -83,11 +83,11 @@ struct ConcurrencyAuditTests {
 
         let tool = ConcurrencyAuditTool(toolchain: ToolchainResolver())
         let complete = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "level": .string("complete")
         ]))
         let minimal = try await tool.call(arguments: .object([
-            "file": .string(url.path),
+            "input": .object(["file": .string(url.path)]),
             "level": .string("minimal")
         ]))
 
@@ -97,15 +97,14 @@ struct ConcurrencyAuditTests {
     }
 
     @Test
-    func missingFileSurfacesAsCompilerError() async throws {
+    func missingFileRejectedByResolver() async throws {
         let tool = ConcurrencyAuditTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object([
-            "file": .string("/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift")
-        ]))
-        #expect(response.isError == false)
-        let result = try decodeResult(ConcurrencyAuditTool.Result.self, response)
-        #expect(result.compilerExitCode != 0)
-        #expect(result.summary.totalFindings == 0)
+        let bogus = "/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"
+        await #expect(throws: MCPError.self) {
+            try await tool.call(arguments: .object([
+                "input": .object(["file": .string(bogus)])
+            ]))
+        }
     }
 
     @Test
@@ -121,7 +120,7 @@ struct ConcurrencyAuditTests {
         let tool = ConcurrencyAuditTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "level": .string("aggressive")
             ]))
         }

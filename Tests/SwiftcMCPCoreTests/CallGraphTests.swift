@@ -27,7 +27,9 @@ struct CallGraphTests {
         defer { scratch.dispose() }
 
         let tool = CallGraphTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object(["file": .string(url.path)]))
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["file": .string(url.path)])
+        ]))
 
         #expect(response.isError == false)
         let result = try decodeResult(CallGraphTool.Result.self, response)
@@ -47,21 +49,20 @@ struct CallGraphTests {
         let tool = CallGraphTool(toolchain: ToolchainResolver())
         await #expect(throws: MCPError.self) {
             try await tool.call(arguments: .object([
-                "file": .string("/tmp/x.swift"),
+                "input": .object(["file": .string("/tmp/x.swift")]),
                 "optimization": .string("nope")
             ]))
         }
     }
 
     @Test
-    func missingFileSurfacesAsCompilerError() async throws {
+    func missingFileRejectedByResolver() async throws {
         let tool = CallGraphTool(toolchain: ToolchainResolver())
-        let response = try await tool.call(arguments: .object([
-            "file": .string("/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift")
-        ]))
-        #expect(response.isError == false)
-        let result = try decodeResult(CallGraphTool.Result.self, response)
-        #expect(result.compilerExitCode != 0)
-        #expect(result.summary.totalFunctions == 0)
+        let bogus = "/tmp/swiftmcp-does-not-exist-\(UUID().uuidString).swift"
+        await #expect(throws: MCPError.self) {
+            try await tool.call(arguments: .object([
+                "input": .object(["file": .string(bogus)])
+            ]))
+        }
     }
 }

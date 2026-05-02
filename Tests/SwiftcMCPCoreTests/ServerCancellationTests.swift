@@ -68,6 +68,96 @@ struct ServerCancellationTests {
     }
 }
 
+/// Regression guard for Codex stop-time review: when XcodebuildResolver started
+/// routing through `runProcessWithTimeoutDiscardingOutput` to dodge the
+/// macOS 26.x SWBBuildService stdio-hang, the bypass had to keep the existing
+/// parent-task → child SIGTERM contract that `runProcess` provides. This test
+/// exercises the discarding variant directly: it spawns a 60-second `sleep`
+/// (so timeout-driven termination cannot rescue us), cancels the parent Task a
+/// moment later, and asserts the call returns well before the 60s wall-clock
+/// — proving the PIDHolder + onCancel handshake is wired through.
+@Suite("runProcessWithTimeoutDiscardingOutput cancellation")
+struct DiscardingOutputCancellationTests {
+    @Test
+    func parentTaskCancelTerminatesChild() async throws {
+        let task = Task {
+            try await runProcessWithTimeoutDiscardingOutput(
+                executable: "/bin/sleep",
+                arguments: ["60"],
+                timeout: 60
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelStart = Date()
+        task.cancel()
+
+        var caughtCancellation = false
+        do {
+            _ = try await task.value
+        } catch is CancellationError {
+            caughtCancellation = true
+        } catch {
+            // Any other error path also counts as "the call returned" — but the
+            // helper's contract under cancellation is specifically to throw
+            // CancellationError so resolvers don't keep running follow-up steps
+            // on a SIGTERM'd build.
+        }
+        let elapsed = Date().timeIntervalSince(cancelStart)
+        // Same 7s rationale as `taskCancellationTerminatesChildProcess`: the
+        // PIDHolder hop + 50ms polling + waitUntilExit add variance, but the
+        // cancel must not let us wait the full 60s.
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s timeout, got \(elapsed)s")
+        // Codex stop-time review: the helper must throw CancellationError so
+        // the calling resolver bails out before processing partial artifacts.
+        #expect(caughtCancellation, "expected CancellationError to propagate so resolvers stop after SIGTERM")
+    }
+}
+
+/// Same cancel-propagation guard as runProcessWithTimeoutDiscardingOutput,
+/// but for the file-logging variant used by xcbuild_perf. The contract is
+/// identical (parent-task cancel → SIGTERM child → CancellationError thrown
+/// out of the helper), and the helper re-uses the same PIDHolder pattern,
+/// so we just need a smoke test confirming the wiring is intact.
+@Suite("runProcessWithTimeoutLoggingTo cancellation")
+struct LoggingProcessCancellationTests {
+    @Test
+    func parentTaskCancelTerminatesLoggingChild() async throws {
+        let scratchURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("swiftmcp-logtest-\(UUID().uuidString).log")
+        defer {
+            try? FileManager.default.removeItem(at: scratchURL)
+        }
+
+        let task = Task {
+            try await runProcessWithTimeoutLoggingTo(
+                executable: "/bin/sleep",
+                arguments: ["60"],
+                logURL: scratchURL,
+                timeout: 60
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelStart = Date()
+        task.cancel()
+
+        var caughtCancellation = false
+        do {
+            _ = try await task.value
+        } catch is CancellationError {
+            caughtCancellation = true
+        } catch {
+            // Other thrown errors still pass the wall-clock check below;
+            // CancellationError is the contracted form but we don't fail
+            // hard on alternative cancel surfaces.
+        }
+        let elapsed = Date().timeIntervalSince(cancelStart)
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s timeout, got \(elapsed)s")
+        #expect(caughtCancellation, "expected CancellationError to propagate so callers stop after SIGTERM")
+    }
+}
+
 @Suite("BuildIsolatedSnippet cancellation (integration)")
 struct BuildIsolatedSnippetCancellationTests {
     @Test
@@ -96,6 +186,15 @@ struct BuildIsolatedSnippetCancellationTests {
             // Either CancellationError or some other Swift Task cancellation surface.
         }
         let elapsed = Date().timeIntervalSince(cancelStart)
-        #expect(elapsed < 5.0, "cancellation should bring the child down within a few seconds, got \(elapsed)s")
+        // 7s threshold is a margin over a few realistic effects:
+        //   - Actor-based PIDHolder requires the onCancel-spawned Task to schedule and
+        //     await the actor before SIGTERM is delivered (microseconds typically, but
+        //     under heavy concurrent xcodebuild/SwiftPM load — see Stage 3.D/E tests —
+        //     it can stretch into hundreds of ms).
+        //   - The 50 ms polling cadence in runProcessWithTimeout adds variance.
+        //   - The killed child still has to flush the pipe and let waitUntilExit return.
+        // What we actually want to prove is "cancellation propagated" vs "we waited the
+        // full 60s wall-clock timeout" — 7s vs 60s is a clear signal either way.
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s wall-clock timeout, got \(elapsed)s")
     }
 }

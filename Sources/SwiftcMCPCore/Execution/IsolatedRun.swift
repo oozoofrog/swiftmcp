@@ -35,7 +35,7 @@ public struct IsolatedRun: Sendable {
 
         let buildOutcome = try await invocation.run(
             modeArgs: [],
-            inputFile: sourceURL.path,
+            inputFiles: [sourceURL.path],
             outputFile: exeURL,
             options: .init(target: target, optimization: .speed)
         )
