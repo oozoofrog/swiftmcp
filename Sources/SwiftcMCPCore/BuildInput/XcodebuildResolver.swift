@@ -117,12 +117,26 @@ public struct XcodebuildResolver: BuildArgsResolver {
             extraSwiftcArgs.append(contentsOf: ["-swift-version", normalized])
         }
 
+        // BUILT_PRODUCTS_DIR is the per-invocation directory where Xcode
+        // drops just-built `.framework` bundles (and CONFIGURATION_BUILD_DIR
+        // resolves to the same path on standard builds). Surfacing it as a
+        // framework search path is what makes `import <UserFramework>` resolve
+        // for analysis tools that consume `ResolvedBuildArgs` — without it,
+        // api_diff/dump-ast/slice_function on a target that depends on a
+        // sibling framework target failed with `no such module '<Foo>'`.
+        // Apple system frameworks (UIKit/Foundation/...) are still resolved
+        // implicitly via `-sdk`, so this only affects user-built deps.
+        var frameworkSearchPaths: [String] = []
+        if let dir = settings["BUILT_PRODUCTS_DIR"], !dir.isEmpty {
+            frameworkSearchPaths.append(dir)
+        }
+
         return ResolvedBuildArgs(
             inputFiles: inputFiles,
             moduleName: moduleName,
             target: triple,
             searchPaths: [],
-            frameworkSearchPaths: [],
+            frameworkSearchPaths: frameworkSearchPaths,
             extraSwiftcArgs: extraSwiftcArgs
         )
     }

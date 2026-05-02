@@ -162,6 +162,18 @@ struct XcodebuildResolverWorkspaceIntegrationTests {
 
         #expect(resolved.extraSwiftcArgs.contains("-sdk"))
         #expect(resolved.extraSwiftcArgs.contains("-swift-version"))
+
+        // BUILT_PRODUCTS_DIR is the per-invocation directory where Xcode
+        // drops `.framework` bundles for sibling targets in the same build.
+        // Surfacing it as a framework search path is what makes
+        // `import <UserFramework>` resolve in api_diff / dump-ast / verify
+        // against multi-target Xcode projects. SampleProject has no
+        // user-built framework deps but the path is still emitted by
+        // xcodebuild, so we just assert the resolver picks it up.
+        #expect(resolved.frameworkSearchPaths.count == 1)
+        if let dir = resolved.frameworkSearchPaths.first {
+            #expect(dir.hasSuffix("/Debug"), "expected BUILT_PRODUCTS_DIR-shaped path, got \(dir)")
+        }
     }
 
     @Test
@@ -464,6 +476,14 @@ struct XcodebuildResolverIntegrationTests {
             #expect(idx + 1 < resolved.extraSwiftcArgs.count)
             let value = resolved.extraSwiftcArgs[idx + 1]
             #expect(!value.hasSuffix(".0"))
+        }
+
+        // BUILT_PRODUCTS_DIR shows up in frameworkSearchPaths so downstream
+        // tools can resolve `import <UserFramework>` against sibling targets
+        // built into the same SYMROOT/<config> directory.
+        #expect(resolved.frameworkSearchPaths.count == 1)
+        if let dir = resolved.frameworkSearchPaths.first {
+            #expect(dir.hasSuffix("/Debug"), "expected BUILT_PRODUCTS_DIR-shaped path, got \(dir)")
         }
     }
 

@@ -661,11 +661,23 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 
 학습 사항:
 - **이 단계는 5라인 변경**: 코드 탐색 에이전트가 사전에 확인 — XcodebuildResolver가 이미 inputFiles + extraSwiftcArgs(-sdk + -swift-version)를 정상 반환하고, SliceFunctionTool은 dump-ast/verify 둘 다 `Options(resolved:)`로 옵션을 흘리고 있어, 거절 분기만 제거하면 즉시 동작. api_diff Stage 4-4b의 패턴과 동형.
-- **Stage 4-4b 후속(user framework deps) 관찰은 그대로 유효**: SampleProject은 dep 없는 static lib라 통과하지만, 사용자 프레임워크 의존을 가진 xcode 타깃에선 `frameworkSearchPaths`가 비어 있어 dump-ast/verify에서 `import UserFramework` 해석 실패 가능. 같은 후속 후보가 slice_function에도 적용된다.
+- **Stage 4-4b 후속(user framework deps) 관찰**: 1차 시점에선 미해결 — SampleProject은 dep 없는 static lib라 통과하지만, 사용자 프레임워크 의존을 가진 xcode 타깃에선 `frameworkSearchPaths`가 비어 있어 dump-ast/verify에서 `import UserFramework` 해석 실패 가능했음. Stage 4-4c에서 `BUILT_PRODUCTS_DIR`을 search-path로 surface해 닫음.
+
+### Stage 4-4c (완료) — `XcodebuildResolver` frameworkSearchPaths 채움
+
+xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework) `XcodebuildResolver`가 빈 `frameworkSearchPaths`를 반환해 api_diff/slice_function의 dump/verify에서 `import UserFramework` 해석 실패하던 갭을 닫음. -showBuildSettings의 `BUILT_PRODUCTS_DIR` 키를 단일 search-path로 surface — sibling target들이 빌드되는 `<SYMROOT>/<configuration>/` 디렉토리.
+
+수행 작업:
+1. ✓ `XcodebuildResolver.resolveArgs`에서 `settings["BUILT_PRODUCTS_DIR"]`을 `frameworkSearchPaths`에 append (경로가 비어있지 않으면).
+2. ✓ 기존 통합 테스트 두 곳(`resolverProducesInputFilesForSampleWorkspace`, `resolverProducesInputFilesAndModuleNameForSampleProject`)에 `frameworkSearchPaths.count == 1 && hasSuffix("/Debug")` 단언 추가. SampleProject은 dep 없지만 BUILT_PRODUCTS_DIR은 항상 emit되어 검증 가능.
+
+학습 사항:
+- **BUILT_PRODUCTS_DIR vs CONFIGURATION_BUILD_DIR vs FRAMEWORK_SEARCH_PATHS**: 호스트 probe에서 셋 다 동일 값 (`<SYMROOT>/Debug`). `BUILT_PRODUCTS_DIR`이 가장 직접적인 의미("이번 빌드가 frameworks를 떨군 곳") + 단일 경로라 split 불필요. `FRAMEWORK_SEARCH_PATHS`는 사용자 설정 + 자동 추가로 합성되며 공백 split이 필요해 후속 옵션. 현재는 BUILT_PRODUCTS_DIR 단일.
+- **chosen.settings는 이미 모든 키를 노출**: `parseBuildSettings`가 KEY=VALUE를 그대로 dictionary에 저장하므로 새 키 추출에 파서 변경 0. 기존 SDKROOT/SWIFT_VERSION 추출 패턴(`if let sdk = settings["SDKROOT"]`)을 그대로 차용.
 
 ### Stage 4 후속 후보 (윤곽만)
 
-- Stage 4-4b/4-2c 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → api_diff 및 slice_function의 dump/verify에서 `import UserFramework` 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
+(현재 시점 후속 후보 없음. 모든 framework-dep / xcode 입력 / api-diff / slice_function / xcbuild_perf 마일스톤 완료.)
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.
 
