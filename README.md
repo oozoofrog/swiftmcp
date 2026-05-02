@@ -4,6 +4,23 @@ A Model Context Protocol (MCP) server exposing Swift compiler capabilities to LL
 
 ## Install
 
+### One-line install (recommended)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | sh
+```
+
+Clones into a temp directory, runs `swift build -c release`, copies `mcpswx` into `~/.local/bin/`, and (if the `claude` CLI is on `PATH`) auto-registers the server with Claude Code. Override the install destination or pin a specific ref:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/oozoofrog/swiftmcp/main/scripts/install.sh | SWIFTMCP_REF=v0.1.0 sh
+```
+
+Requires `swift`, `git`, and macOS. The script never invokes `sudo`; choose an `INSTALL_DIR` you can write to.
+
+### Manual install
+
 ```sh
 git clone git@github.com:oozoofrog/swiftmcp.git
 cd swiftmcp
