@@ -210,64 +210,32 @@ public struct XcodebuildResolver: BuildArgsResolver {
         // analysis tool will surface the same diagnostics on its own swiftc call. Per
         // PLAN §0.3, compiler diagnostics are the analysis output, not a tool error.
         //
-        // We bypass `runProcess` here for two related Xcode 26.2+ / macOS 26.x bugs
-        // (rdar // react-native-community/cli#2768):
+        // Why `runProcessWithTimeoutDiscardingOutput` instead of plain `runProcess`:
+        // Xcode 26.2+ on macOS 26.x has a known bug
+        // (react-native-community/cli#2768) where xcodebuild's SWBBuildService child
+        // inherits the parent's stdout/stderr file descriptors and keeps them open
+        // after `BUILD SUCCEEDED`. A reader using `readDataToEndOfFile()` on those
+        // pipes never observes EOF and blocks forever — even after the xcodebuild
+        // PID dies, because SWBBuildService still holds a writer-end copy of the FD.
+        // Routing stdio to /dev/null sidesteps the read entirely, and the polling
+        // loop with SIGTERM/SIGKILL escalation guarantees we return within the
+        // timeout when xcodebuild itself wedges.
         //
-        //   1. xcodebuild's SWBBuildService child inherits the parent's stdout/stderr
-        //      file descriptors and keeps them open after `BUILD SUCCEEDED`. A
-        //      reader using `readDataToEndOfFile()` on those pipes never observes
-        //      EOF and blocks forever — even after we SIGTERM xcodebuild itself,
-        //      because the FD copy in SWBBuildService is still alive.
-        //   2. xcodebuild itself sometimes refuses to exit until SWBBuildService
-        //      lets go of the pipes, so `waitUntilExit()` also hangs.
-        //
-        // Routing stdio to `/dev/null` sidesteps (1) entirely — no reader, no
-        // block. The polling loop with SIGTERM/SIGKILL escalation handles (2) so
-        // the call returns within the timeout window even when xcodebuild is
-        // wedged. SwiftFileList is materialized well before BUILD SUCCEEDED, so
-        // the downstream existence check still differentiates "wedged but built"
-        // from "genuinely failed".
+        // The discarding variant uses the same `PIDHolder` + `withTaskCancellationHandler`
+        // pattern as `runProcess`, so a parent-task cancel still tears the child down
+        // — the resolver's cancellation contract (parent task cancelled → SIGTERM
+        // delivered to xcodebuild within scheduling latency) survives this rerouting.
+        // SwiftFileList is materialized well before BUILD SUCCEEDED, so the
+        // downstream existence check still differentiates wedged-but-built from
+        // genuinely failed.
         do {
-            try await runXcodebuildSilently(arguments: arguments, timeout: 300)
-        } catch let error as ProcessRunnerError {
-            switch error {
-            case .launchFailed(let message):
-                throw MCPError.toolExecutionFailed("xcodebuild build launch failed: \(message)")
-            }
-        }
-    }
-
-    /// xcodebuild build with stdio redirected to /dev/null and a wall-clock
-    /// timeout. We don't read xcodebuild's output here — the SwiftFileList
-    /// existence check downstream is what tells us if the build succeeded.
-    private func runXcodebuildSilently(arguments: [String], timeout: TimeInterval) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
+            _ = try await runProcessWithTimeoutDiscardingOutput(
+                executable: "/usr/bin/xcodebuild",
+                arguments: arguments,
+                timeout: 300
+            )
         } catch {
-            throw ProcessRunnerError.launchFailed("\(error)")
-        }
-        let pollInterval: TimeInterval = 0.05
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
-        }
-        if process.isRunning {
-            process.terminate()
-            let graceDeadline = Date().addingTimeInterval(1.0)
-            while process.isRunning && Date() < graceDeadline {
-                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
-            }
-            #if canImport(Darwin)
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-            #endif
-            process.waitUntilExit()
+            throw MCPError.toolExecutionFailed("xcodebuild build launch failed: \(error)")
         }
     }
 

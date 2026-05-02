@@ -130,6 +130,81 @@ public func runProcess(
     }
 }
 
+/// Wall-clock-bounded process run that *does not capture* stdout/stderr. The child's
+/// streams go to `FileHandle.nullDevice`, so we never read pipes — useful for tools
+/// that wedge their stdio after success (Xcode 26.2+ xcodebuild keeps stdout open
+/// via its SWBBuildService child even after `BUILD SUCCEEDED`, which hangs any
+/// `readDataToEndOfFile()` reader). Parent-task cancellation is propagated to the
+/// child via SIGTERM exactly like `runProcess` (same `PIDHolder` actor + sticky
+/// cancel handshake), so cancelling the calling Task tears the child down.
+///
+/// Returns `timedOut == true` if the child was still running at the deadline; we
+/// then SIGTERM, give a 1-second grace, and SIGKILL if needed. The exit code is
+/// reported but callers typically ignore it (the existence/absence of the child's
+/// real side-effect — a build artifact, a generated file — is the real signal).
+public func runProcessWithTimeoutDiscardingOutput(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]? = nil,
+    workingDirectory: URL? = nil,
+    timeout: TimeInterval
+) async throws -> (exitCode: Int32, timedOut: Bool) {
+    let holder = PIDHolder()
+    return try await withTaskCancellationHandler {
+        try await Task.detached { @Sendable in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            if let environment {
+                process.environment = environment
+            }
+            if let workingDirectory {
+                process.currentDirectoryURL = workingDirectory
+            }
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+            } catch {
+                throw ProcessRunnerError.launchFailed("\(error)")
+            }
+
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
+
+            let pollInterval: TimeInterval = 0.05
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+            }
+
+            var timedOut = false
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+                let graceDeadline = Date().addingTimeInterval(1.0)
+                while process.isRunning && Date() < graceDeadline {
+                    try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+                }
+                #if canImport(Darwin)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                #endif
+                process.waitUntilExit()
+            }
+            return (process.terminationStatus, timedOut)
+        }.value
+    } onCancel: {
+        // See note in runProcess: onCancel is synchronous; we hop into the actor via an
+        // unstructured Task.
+        Task { await holder.markCancelled() }
+    }
+}
+
 /// Same as `runProcess` but enforces a wall-clock timeout. On expiry the process
 /// receives `SIGTERM`; if it ignores the signal for 1 second we escalate to `SIGKILL`.
 /// Parent-task cancellation is propagated to the child via SIGTERM (see `PIDHolder`).

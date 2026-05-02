@@ -68,6 +68,39 @@ struct ServerCancellationTests {
     }
 }
 
+/// Regression guard for Codex stop-time review: when XcodebuildResolver started
+/// routing through `runProcessWithTimeoutDiscardingOutput` to dodge the
+/// macOS 26.x SWBBuildService stdio-hang, the bypass had to keep the existing
+/// parent-task → child SIGTERM contract that `runProcess` provides. This test
+/// exercises the discarding variant directly: it spawns a 60-second `sleep`
+/// (so timeout-driven termination cannot rescue us), cancels the parent Task a
+/// moment later, and asserts the call returns well before the 60s wall-clock
+/// — proving the PIDHolder + onCancel handshake is wired through.
+@Suite("runProcessWithTimeoutDiscardingOutput cancellation")
+struct DiscardingOutputCancellationTests {
+    @Test
+    func parentTaskCancelTerminatesChild() async throws {
+        let task = Task {
+            try await runProcessWithTimeoutDiscardingOutput(
+                executable: "/bin/sleep",
+                arguments: ["60"],
+                timeout: 60
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelStart = Date()
+        task.cancel()
+
+        _ = try? await task.value
+        let elapsed = Date().timeIntervalSince(cancelStart)
+        // Same 7s rationale as `taskCancellationTerminatesChildProcess`: the
+        // PIDHolder hop + 50ms polling + waitUntilExit add variance, but the
+        // cancel must not let us wait the full 60s.
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s timeout, got \(elapsed)s")
+    }
+}
+
 @Suite("BuildIsolatedSnippet cancellation (integration)")
 struct BuildIsolatedSnippetCancellationTests {
     @Test
