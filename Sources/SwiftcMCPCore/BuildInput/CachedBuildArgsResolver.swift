@@ -1,28 +1,39 @@
 import Foundation
+import CryptoKit
 
 /// Wraps another `BuildArgsResolver` and memoizes its results in-memory, keyed on
 /// the full `BuildInput` value. Each cached entry carries a *fingerprint* — a
-/// snapshot of mtimes for the manifests + every resolved input file. On every cache
-/// hit the resolver re-stats those paths and compares; any change (Package.swift
-/// edited, project.pbxproj touched, source file modified, directory listing
-/// changed because a file was added/removed, or any path missing entirely)
-/// invalidates the entry and forces a re-resolve.
+/// snapshot of `(mtime, size, contentHash?)` for the manifests + every resolved
+/// input file. On every cache hit the resolver re-stamps those paths and
+/// compares; any change (Package.swift edited, project.pbxproj touched, source
+/// file modified — even if mtime was restored, directory listing changed
+/// because a file was added/removed, or any path missing entirely) invalidates
+/// the entry and forces a re-resolve.
 ///
-/// What `mtime` actually catches:
-/// - **File mtime change**: source edits, manifest edits.
-/// - **Directory mtime change**: macOS/Linux update the directory's mtime when a
-///   child entry is added or removed. So a new `.swift` file dropped into a
-///   `Sources/<target>` folder bumps that folder's mtime even before any file is
-///   read.
-/// - **Path missing**: PersistentScratch dirs reclaimed by the OS, files moved.
+/// What the stamp actually catches:
+/// - **mtime change**: ordinary edits and saves bump it.
+/// - **size change**: most edits change file length too, redundant signal that's
+///   cheap to capture from `attributesOfItem`.
+/// - **content hash change** (regular files only): catches in-place rewrites
+///   that preserve mtime — `git checkout`, `cp -p`, `touch -r`, or any tool
+///   that restores the original timestamp after writing new bytes. Without this
+///   the cache silently returned stale analysis. Hash is computed only for
+///   `resolved.inputFiles`, since those are the bytes swiftc actually reads;
+///   directories don't have hashable content (`mtime` covers add/remove there)
+///   and search-path/manifest paths only need their *shape* tracked.
+/// - **Path missing**: handled via a sentinel mtime so missing-then-missing
+///   still differs from missing-then-present.
 ///
-/// What it does *not* catch:
-/// - In-place file rewrites that preserve mtime (rare; tools like `cp -p` or git
-///   checkouts can do this). Acceptable trade-off for the in-memory tier; future
-///   milestones can layer content hashing on top.
-/// - Changes to files swiftc reaches via search-paths but that aren't part of the
-///   resolver's `inputFiles` (e.g. a transitive `.swiftmodule` rebuilt elsewhere).
-///   Out of scope for the resolver's contract — that lives in the consuming tool.
+/// Why CryptoKit: SHA-256 is a system framework on every supported host
+/// (macOS 13+ / Swift 6.0+) and adds no third-party dependency. The resolver's
+/// "Foundation only" rule covers the MCP wire layer — local file integrity
+/// uses whatever the platform ships.
+///
+/// What the cache still does *not* catch:
+/// - Changes to files swiftc reaches via search-paths but that aren't part of
+///   the resolver's `inputFiles` (e.g. a transitive `.swiftmodule` rebuilt
+///   elsewhere). Out of scope for the resolver's contract — that lives in the
+///   consuming tool.
 ///
 /// Concurrency: actor isolation serializes cache access. The wrapped resolver may
 /// still be invoked twice for the same input if two callers race past the cache
@@ -32,10 +43,19 @@ import Foundation
 /// Errors thrown by the wrapped resolver propagate verbatim. The cache itself
 /// never throws.
 public actor CachedBuildArgsResolver: BuildArgsResolver {
-    /// Path → modification time (epoch seconds). nil means "the path was missing
-    /// when we last looked" — a missing-then-missing comparison still invalidates,
-    /// because the resolver's success path implies the path was present.
-    typealias Fingerprint = [String: TimeInterval]
+    /// Per-path stamp: `(mtime, size, contentHash?)`. `contentHash` is `nil` for
+    /// non-regular-files (directories, symlinks, missing paths) and for
+    /// regular files we *don't* hash (anything other than `resolved.inputFiles`).
+    /// All three fields participate in equality, so any change forces a miss.
+    /// A missing path is encoded as `(mtime: -1, size: nil, contentHash: nil)`
+    /// — distinguishable from a real file with epoch-zero mtime.
+    struct Stamp: Equatable, Hashable {
+        let mtime: TimeInterval
+        let size: Int64?
+        let contentHash: Data?
+    }
+
+    typealias Fingerprint = [String: Stamp]
 
     private struct Entry {
         let resolved: ResolvedBuildArgs
@@ -126,9 +146,17 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         // directory.
         paths.formUnion(manifestPaths(for: input))
 
+        // Only `inputFiles` get content-hashed: those are the bytes swiftc
+        // actually compiles, so byte-level changes there *are* the analysis
+        // delta we must catch. Directories don't have hashable content
+        // (mtime covers add/remove). Manifests / search-path roots are
+        // tracked for *shape* only — any meaningful manifest edit also moves
+        // mtime forward, and re-hashing every workspace XML on every cache
+        // hit would dwarf the resolver call we're trying to skip.
+        let inputFileSet = Set(resolved.inputFiles)
         var fingerprint: Fingerprint = [:]
         for path in paths {
-            fingerprint[path] = mtimeOrSentinel(at: path)
+            fingerprint[path] = stamp(at: path, hashContent: inputFileSet.contains(path))
         }
         return fingerprint
     }
@@ -289,18 +317,29 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
         return directories
     }
 
-    /// `nil` when the path doesn't exist; otherwise the mtime in epoch seconds.
-    /// Using `nil` (rather than 0) means "missing" and "epoch-zero mtime" are
-    /// distinguishable — both still invalidate the cache, but for clearer reasons
-    /// when debugging.
-    private func mtimeOrSentinel(at path: String) -> TimeInterval {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let date = attrs[.modificationDate] as? Date
-        else {
-            // -1 sentinel: definitely doesn't equal any real mtime, and avoids the
-            // dictionary-key issue of storing `nil` in [String: TimeInterval].
-            return -1
+    /// Build a `Stamp` for a path. Missing paths get the `(-1, nil, nil)`
+    /// sentinel. Regular files get `size`; if `hashContent` is true, also
+    /// SHA-256 of the bytes. Directories get only `mtime + size` (size is
+    /// platform-defined for dirs but stable enough to participate in the
+    /// signal).
+    ///
+    /// Hash failures (e.g. permission denied mid-read) fall back to
+    /// `contentHash: nil`. That still differs from a successful hash on the
+    /// next call, so the entry will invalidate — false misses cost a
+    /// re-resolve, never staleness.
+    private func stamp(at path: String, hashContent: Bool) -> Stamp {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: path) else {
+            return Stamp(mtime: -1, size: nil, contentHash: nil)
         }
-        return date.timeIntervalSince1970
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        let size = (attrs[.size] as? NSNumber)?.int64Value
+        let isRegularFile = (attrs[.type] as? FileAttributeType) == .typeRegular
+        var contentHash: Data? = nil
+        if hashContent, isRegularFile,
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
+            contentHash = Data(SHA256.hash(data: data))
+        }
+        return Stamp(mtime: mtime, size: size, contentHash: contentHash)
     }
 }

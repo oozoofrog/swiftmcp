@@ -508,6 +508,57 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Stage 4-3 후속: in-place rewrites that preserve mtime (the kind
+    /// `git checkout`, `cp -p`, or `touch -r` can produce) used to be silent
+    /// stale hits. With content hashing in the fingerprint, the Stamp now
+    /// changes on byte-level edits even when mtime — and even file size —
+    /// stays identical. The two file bodies have the same length so `.size`
+    /// can't distinguish them; we pin mtime to an integer-second epoch so
+    /// APFS sub-second rounding can't desynchronize the restore — leaving
+    /// the SHA-256 component as the *only* signal that fires.
+    @Test
+    func invalidatesWhenContentChangesButMtimeAndSizePreserved() async throws {
+        let scratch = try CallScratch()
+        defer { scratch.dispose() }
+        let fileURL = try scratch.write(name: "stable.swift", contents: "let original = 1\n")
+
+        // Integer-second epoch round-trips cleanly through APFS's
+        // nanosecond mtime field. Sub-second bits would survive
+        // `setAttributes` write but Date(timeIntervalSince1970:)
+        // re-parsed from the read-back attrs has come back with a slightly
+        // different Double on this host, causing the Stamp's mtime alone
+        // to differ — short-circuiting the very check we want to exercise.
+        let pinnedMtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: pinnedMtime],
+            ofItemAtPath: fileURL.path
+        )
+
+        let counting = CountingResolver(LocalFilesResolver())
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.file(path: fileURL.path, target: nil)
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 1)
+
+        // Same byte length so .size stays identical, and we restore the
+        // pinned mtime so .mtime stays identical too.
+        try "let modified = 2\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: pinnedMtime],
+            ofItemAtPath: fileURL.path
+        )
+        let postAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        // Sanity: confirm only the bytes changed, so a pass below proves
+        // hashing is doing the work — not mtime/size drift.
+        #expect((postAttrs[.modificationDate] as? Date) == pinnedMtime)
+        #expect("let original = 1\n".utf8.count == "let modified = 2\n".utf8.count)
+        #expect((postAttrs[.size] as? NSNumber)?.intValue == "let modified = 2\n".utf8.count)
+
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
