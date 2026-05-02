@@ -6,6 +6,7 @@ import Testing
 struct SliceFunctionMergeRangesTests {
     private func entry(_ start: Int, _ end: Int, name: String = "x") -> DeclIndex.Entry {
         DeclIndex.Entry(
+            filePath: "/tmp/test.swift",
             name: name,
             signatureKey: name,
             kind: .function,
@@ -252,5 +253,44 @@ struct SliceFunctionTests {
         let buildResult = try decodeResult(BuildIsolatedSnippetTool.Result.self, buildResponse)
         #expect(buildResult.buildExitCode == 0)
         #expect(buildResult.runStdout?.contains("<6>") == true)
+    }
+
+    /// Stage 4-2 후속: directory input. MultiFileSources fixture splits a
+    /// `Greeter` struct (A.swift) and a `describe` free function (B.swift)
+    /// across two files. Slicing `describe` over the directory must:
+    ///   - run dump-ast on both files together so cross-file references
+    ///     resolve,
+    ///   - tag each closure entry with its source file,
+    ///   - render decls grouped per file, and
+    ///   - produce a self-contained slice that type-checks.
+    @Test
+    func slicesAcrossDirectoryInputResolvesCrossFileReferences() async throws {
+        let tool = SliceFunctionTool(toolchain: ToolchainResolver())
+        let response = try await tool.call(arguments: .object([
+            "input": .object(["directory": .string(fixturePath("MultiFileSources"))]),
+            "function_name": .string("describe")
+        ]))
+        #expect(response.isError == false)
+        let result = try decodeResult(SliceFunctionTool.Result.self, response)
+
+        let names = Set(result.includedSymbols.map(\.name))
+        #expect(names.contains("describe"))
+        #expect(names.contains("Greeter"))
+
+        // includedSymbols must carry the source file path — that's the
+        // distinguishing field for multi-file slices.
+        let describeEntry = result.includedSymbols.first(where: { $0.name == "describe" })
+        let greeterEntry = result.includedSymbols.first(where: { $0.name == "Greeter" })
+        #expect(describeEntry?.filePath.hasSuffix("/B.swift") == true)
+        #expect(greeterEntry?.filePath.hasSuffix("/A.swift") == true)
+
+        // The rendered slice carries both decls verbatim.
+        #expect(result.slicedCode.contains("public struct Greeter"))
+        #expect(result.slicedCode.contains("public func describe(_ greeter: Greeter)"))
+
+        // Self-typecheck succeeds — proves the multi-file slice merges
+        // without dropping a referenced type.
+        #expect(result.verification.compilerExitCode == 0)
+        #expect(result.verification.unresolvedReferences.isEmpty)
     }
 }

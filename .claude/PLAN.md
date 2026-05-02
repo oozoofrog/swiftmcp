@@ -608,10 +608,29 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **xcodebuild stdio nullDevice 우회** (macOS 26.2+ / Xcode 26.2+): SWBBuildService 자식이 부모의 stdout/stderr FD를 상속받고 BUILD SUCCEEDED 후에도 닫지 않아 `readDataToEndOfFile()`이 영원히 블록. `runProcessWithTimeoutDiscardingOutput` (FileHandle.nullDevice + 5분 wall-clock + SIGTERM/SIGKILL 에스컬레이션)으로 우회. SwiftFileList 존재로 빌드 성공 판정. Process 자체에는 `runProcess`/`runProcessWithTimeout`과 동일한 `withTaskCancellationHandler` + `PIDHolder` 패턴을 사용해 부모 task cancel → 자식 SIGTERM 계약을 보존. 헬퍼는 `withTaskCancellationHandler` 종료 직후 `try Task.checkCancellation()`을 호출 — SIGTERM으로 자식이 자연 종료된 후에도 caller가 follow-up xcodebuild step을 진행하지 않도록 `CancellationError`를 throw해 resolver 흐름을 끊는다 (Codex 후속 지적 두 번째 — 신호 전파만 있고 흐름 종료가 없으면 부분 산출물에 대해 작업 진행). 단위 테스트 `parentTaskCancelTerminatesChild`이 60초 sleep + 200ms 후 cancel → 7초 내 종료 + CancellationError catch 둘 다 검증.
 - **테스트에서 cachedResolver 공유**: `ApiDiffTool(toolchain:resolver:)`에 명시적으로 `CachedBuildArgsResolver`를 주입하면 baseline=current self-diff 테스트가 xcodebuild를 한 번만 실행 → CI 시간 절반. 프로덕션(Mcpswx)에서는 이미 cachedResolver가 주입돼 있으니 동일 입력 두 번에서도 자연스럽게 캐시 hit.
 
+### Stage 4-2b (완료) — `slice_function` 디렉토리/패키지 입력
+
+258 tests / 47 suites 통과 (255 + 3 신규: DeclIndex multi-file 1, ReferenceCollector multi-file 1, SliceFunction directory 1). 1차 Stage 4-2가 file 단일에 묶여 있던 한계를 풀었다. xcode 입력은 여전히 보류 — Xcode 빌드 시스템이 결정한 정확한 inputFiles 집합을 dump-ast에 흘리는 path가 미검증.
+
+수행 작업:
+1. ✓ `DeclIndex.Entry`에 `filePath` 추가. `startCoords` 정규식이 이미 첫 그룹으로 file을 capture하던 것을 사용하도록 변경.
+2. ✓ `DeclIndex.entry(containingLine:inFile:)` — line만으로는 multi-file에서 다른 file의 동일 line decl을 잘못 반환. file 필터 추가.
+3. ✓ `ReferenceCollector.collect(astText:enclosing:enclosingFile:)` — node anchor를 (file, line) 쌍으로 추적. 같은 line이라도 다른 file에서 발생한 reference를 자동 제외. 단위 테스트 `filtersByEnclosingFileEvenAcrossSharedLineNumbers`가 두 source_file 블록에서 line 5의 declref이 file별로 분리됨을 검증.
+4. ✓ `DependencyGraph`이 closure entry의 `filePath`를 ReferenceCollector에 전달.
+5. ✓ `SliceFunctionTool`이 `.file`, `.directory`, `.swiftPMPackage` 모두 수용. `.xcodeProject`/`.xcodeWorkspace`는 `MCPError.invalidParams`로 거절. dump-ast 호출에 `inputFiles` 전체 + `moduleName` 전달.
+6. ✓ Multi-file 렌더링: closure entry를 `Dictionary(grouping:)`으로 file별 분리 → file별로 `SourceRangeMapper` + range merge → file 경로 정렬 순서로 concat. `import` 라인은 모든 file에서 수집 후 dedupe.
+7. ✓ `IncludedSymbol`에 `filePath` 필드 추가 (응답 schema 확장).
+
+학습 사항:
+- **Multi-file `swiftc -dump-ast`은 stderr로 출력**: 단일 파일은 stdout에 AST를 쓰지만, 두 파일 이상을 한 invocation에 넘기면 stdout은 0 byte이고 전체 AST가 stderr로 간다. SwiftcInvocation이 이 차이를 알지 못해 `astOutcome.process.standardOutput`만 보면 multi-file에서 빈 텍스트를 받게 됨. SliceFunctionTool에서 stdout 비어있으면 stderr로 fallback. (Swift toolchain 6.3.x에서 확인. 향후 toolchain probe로 일관성 모니터링.)
+- **stdin 상속이 swift-driver multi-file dump-ast을 hang시킴**: macOS 26.x에서 swift-driver가 multi-input batch frontend 시작 시 stdin을 probe하는 동작이 있어 보임 — 부모(test bundle 등)의 stdin을 그대로 상속하면 hang. `runProcess`이 `process.standardInput = FileHandle.nullDevice`로 잘라 즉시 EOF 반환.
+- **stdout/stderr 순차 읽기는 deadlock 위험**: `readDataToEndOfFile()`을 stdout → stderr 순으로 호출하던 패턴은 stderr에 24KB 정도만 들어와도 64KB pipe buffer가 차면서 child가 write block → child가 exit 못함 → stdout EOF 안 옴 → 영원히 멈춤. multi-file dump-ast는 이 위험에 정면으로 노출. Task.detached 두 개로 동시 read.
+- **응답 schema 확장은 backward-compatible**: `IncludedSymbol`에 새 `filePath` 필드를 추가했으나 기존 클라이언트는 모르는 필드를 무시할 뿐 깨지지 않음. 1차 마일스톤에서 `IncludedSymbol`을 file-naive하게 만든 결정이 이번에 비용 없이 회수됨.
+
 ### Stage 4 후속 후보 (윤곽만)
 
 - Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
-- Stage 4-2 후속: 디렉토리/모듈 입력 슬라이싱 (slice_function 현재는 file 단일).
+- Stage 4-2b 후속: `slice_function`의 xcodeProject/xcodeWorkspace 입력 — Xcode가 결정한 inputFiles를 dump-ast에 그대로 흘리는 경로 + 환경 변수 검증.
 - Stage 4-4b 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → import 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
 
 각 Stage 진입 시 분기점 절차로 PLAN을 갱신한다.

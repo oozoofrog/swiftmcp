@@ -99,7 +99,33 @@ struct DeclIndexTests {
     func entryContainingLineFindsParent() throws {
         let index = DeclIndex.build(astText: sampleAST)
         // Line 5 is inside Counter (lines 3..8).
-        let parent = try #require(index.entry(containingLine: 5))
+        let parent = try #require(index.entry(containingLine: 5, inFile: "/tmp/sample.swift"))
         #expect(parent.name == "Counter")
+    }
+
+    /// Multi-file build: each top-level decl is tagged with the source file
+    /// it came from, derived from the `range=[<file>:…]` payload. Without
+    /// per-entry filePath, slicing a directory input would conflate decls
+    /// that share line numbers across files.
+    @Test
+    func tracksSourceFilePathPerEntry() {
+        let multiAST = """
+        (source_file "/tmp/A.swift"
+          (struct_decl decl_context=0x1 range=[/tmp/A.swift:1:8 - line:3:1] "Greeter" interface_type="Greeter.Type" access=public)
+          (func_decl decl_context=0x1 range=[/tmp/A.swift:4:6 - line:6:1] "describe(_:)" interface_type="(Greeter) -> String" access=public))
+        (source_file "/tmp/B.swift"
+          (struct_decl decl_context=0x1 range=[/tmp/B.swift:1:8 - line:3:1] "Listener" interface_type="Listener.Type" access=public))
+        """
+        let index = DeclIndex.build(astText: multiAST)
+        let greeter = index.entries.first { $0.name == "Greeter" }
+        let describe = index.entries.first { $0.name == "describe" }
+        let listener = index.entries.first { $0.name == "Listener" }
+        #expect(greeter?.filePath == "/tmp/A.swift")
+        #expect(describe?.filePath == "/tmp/A.swift")
+        #expect(listener?.filePath == "/tmp/B.swift")
+        // entry(containingLine:inFile:) must respect the file filter so
+        // line-number collisions across files don't return the wrong decl.
+        #expect(index.entry(containingLine: 1, inFile: "/tmp/A.swift")?.name == "Greeter")
+        #expect(index.entry(containingLine: 1, inFile: "/tmp/B.swift")?.name == "Listener")
     }
 }

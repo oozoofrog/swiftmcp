@@ -99,6 +99,13 @@ public func runProcess(
             }
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
+            // Sever stdin inheritance. Otherwise the child gets the test
+            // bundle's (or any parent's) stdin, which has hung
+            // `swift-driver -dump-ast` invocations on macOS 26.x in
+            // multi-input mode — driver appears to probe stdin during its
+            // batch-frontend setup and never returns. Pointing at
+            // /dev/null gives an immediate EOF for any read attempt.
+            process.standardInput = FileHandle.nullDevice
 
             do {
                 try process.run()
@@ -111,8 +118,20 @@ public func runProcess(
                 Task { await holder.clear() }
             }
 
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            // Read stdout and stderr concurrently so a write-heavy stderr
+            // doesn't fill its pipe buffer and stall the child while we're
+            // still blocked reading stdout. swiftc multi-file `-dump-ast`
+            // routes the entire AST to stderr (single-file uses stdout), so
+            // sequential reads on those would deadlock for any input that
+            // produced more than one frontend job.
+            async let stdoutDataTask: Data = Task.detached {
+                stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            }.value
+            async let stderrDataTask: Data = Task.detached {
+                stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            }.value
+            let stdoutData = await stdoutDataTask
+            let stderrData = await stderrDataTask
             process.waitUntilExit()
 
             return ProcessResult(

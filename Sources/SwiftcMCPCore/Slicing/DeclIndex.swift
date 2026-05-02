@@ -9,6 +9,12 @@ import Foundation
 /// other declarations live at deeper indents and are excluded. This is a coarse but
 /// stable heuristic; a sample-AST unit test guards regressions when the formatter
 /// changes.
+///
+/// Multi-file dump-ast emits one `(source_file "PATH" …)` block per input file;
+/// each top-level decl line carries its source path inline as
+/// `range=[<absolute path>:<sl>:<sc> - line:<el>:<ec>]`, so every Entry can
+/// independently identify which file it lives in without tracking ambient
+/// source-file scope while parsing.
 public struct DeclIndex: Sendable {
     public struct Entry: Sendable, Hashable {
         public enum Kind: String, Sendable, Codable, Hashable {
@@ -20,6 +26,9 @@ public struct DeclIndex: Sendable {
             case variable        // top-level let/var
         }
 
+        /// Absolute path of the source file this decl came from. Same path that
+        /// appears inside `range=[<path>:…]` in the AST line.
+        public let filePath: String
         public let name: String
         /// Full key for overload disambiguation. For functions this is the swiftc
         /// `"foo(_:_:)"` form; for types it's the bare name.
@@ -59,10 +68,12 @@ public struct DeclIndex: Sendable {
         entries.first(where: { $0.signatureKey == signatureKey })
     }
 
-    /// All entries whose source range covers `line` (inclusive). Used by
-    /// `ReferenceCollector` to attribute referenced AST nodes back to a parent decl.
-    public func entry(containingLine line: Int) -> Entry? {
-        entries.first(where: { $0.startLine <= line && line <= $0.endLine })
+    /// All entries whose source range covers `line` (inclusive) in `file`. The
+    /// file filter is required for multi-file inputs — line numbers are not
+    /// unique across `(source_file …)` blocks so a bare line query would match
+    /// the wrong decl when two files happen to share a line.
+    public func entry(containingLine line: Int, inFile file: String) -> Entry? {
+        entries.first(where: { $0.filePath == file && $0.startLine <= line && line <= $0.endLine })
     }
 
     // MARK: - Parsing
@@ -79,9 +90,11 @@ public struct DeclIndex: Sendable {
     nonisolated(unsafe) private static let extensionLine = #/^  \(extension_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\][^"]*?"([^"]+)"/#
     nonisolated(unsafe) private static let varLine = #/^  \(var_decl[^)]*?range=\[[^\]]+ - line:(\d+):(\d+)\]\s+"([^"]+)"/#
 
-    /// Pull the start column out of `range=[<file>:<sl>:<sc> - line:…]`. Returned as
-    /// 0 when not parseable (which only happens on malformed input).
-    nonisolated(unsafe) private static let startCoords = #/range=\[[^:]+:(\d+):(\d+) - line:/#
+    /// Pull the file path + start line/column out of
+    /// `range=[<file>:<sl>:<sc> - line:…]`. Three capture groups: file, sl, sc.
+    /// File path may contain almost anything except `:`; we accept everything up
+    /// to the line/column delimiter.
+    nonisolated(unsafe) private static let startCoords = #/range=\[([^:]+):(\d+):(\d+) - line:/#
 
     private static func parseTopLevelLine(_ line: String) -> Entry? {
         if let match = try? funcLine.firstMatch(in: line) {
@@ -120,9 +133,10 @@ public struct DeclIndex: Sendable {
     ) -> Entry? {
         guard let endLine, let endColumn else { return nil }
         guard let start = try? startCoords.firstMatch(in: line),
-              let startLine = Int(start.output.1),
-              let startColumn = Int(start.output.2)
+              let startLine = Int(start.output.2),
+              let startColumn = Int(start.output.3)
         else { return nil }
+        let filePath = String(start.output.1)
         // Functions in swiftc reports come as `"name(_:_:)"`. Strip the argument-label
         // suffix to get a base name suitable for user-facing lookup.
         let baseName: String
@@ -132,6 +146,7 @@ public struct DeclIndex: Sendable {
             baseName = name
         }
         return Entry(
+            filePath: filePath,
             name: baseName,
             signatureKey: name,
             kind: kind,

@@ -45,7 +45,8 @@ public struct DependencyGraph: Sendable {
 
             let refs = ReferenceCollector.collect(
                 astText: astText,
-                enclosing: entry.startLine...entry.endLine
+                enclosing: entry.startLine...entry.endLine,
+                enclosingFile: entry.filePath
             )
             for ref in refs {
                 let candidates = index.find(name: ref.name)

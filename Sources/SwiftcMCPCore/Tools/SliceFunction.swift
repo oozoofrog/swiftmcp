@@ -20,6 +20,11 @@ import Foundation
 ///    which symbols (if any) the slice failed to resolve on its own.
 public struct SliceFunctionTool: MCPTool {
     public struct IncludedSymbol: Sendable, Codable, Equatable {
+        /// Absolute path of the source file the symbol came from. With
+        /// directory / package inputs, multiple symbols can share a name and
+        /// only differ by file (e.g. internal helpers with the same name in
+        /// peer files). Always populated.
+        public let filePath: String
         public let name: String
         public let signatureKey: String
         public let kind: DeclIndex.Entry.Kind
@@ -92,31 +97,58 @@ public struct SliceFunctionTool: MCPTool {
             throw MCPError.invalidParams("`function_name` is required and must be a non-empty string")
         }
         let input = try BuildInput.decode(dict["input"])
-        guard case .file(_, let target) = input else {
-            throw MCPError.invalidParams("slice_function currently only supports `input.file`. Directory / package / project / workspace cases are deferred to a follow-up milestone.")
+        // xcode inputs are deferred — we don't yet have a tested path for
+        // dumping every Swift file Xcode wires into a target.
+        switch input {
+        case .file, .directory, .swiftPMPackage:
+            break
+        case .xcodeProject, .xcodeWorkspace:
+            throw MCPError.invalidParams("slice_function does not yet support xcodeProject / xcodeWorkspace inputs. File / directory / package cases are supported.")
         }
         let includeImports = dict["include_imports"]?.asBool ?? true
 
         let resolved = try await resolver.resolveArgs(for: input)
-        guard let absolutePath = resolved.inputFiles.first else {
-            throw MCPError.internalError("LocalFilesResolver returned no input files for `.file` case")
+        guard !resolved.inputFiles.isEmpty else {
+            throw MCPError.internalError("Resolver returned no input files for the given input")
         }
+        let target = resolved.target
 
-        let source: String
-        do {
-            source = try String(contentsOfFile: absolutePath, encoding: .utf8)
-        } catch {
-            throw MCPError.invalidParams("Could not read \(absolutePath): \(error.localizedDescription)")
+        // Read every input file's source up-front. The slicer needs each file's
+        // raw text to render a `SourceRangeMapper` slice, and the import-line
+        // sweep also pulls from every source.
+        var sourcesByPath: [String: String] = [:]
+        for path in resolved.inputFiles {
+            do {
+                sourcesByPath[path] = try String(contentsOfFile: path, encoding: .utf8)
+            } catch {
+                throw MCPError.invalidParams("Could not read \(path): \(error.localizedDescription)")
+            }
         }
 
         let start = Date()
+        // Multi-file dump-ast: pass every input file in one swiftc invocation
+        // so the AST is type-checked against the entire module. Single-file
+        // dumps would miss cross-file type lookups (e.g. `App/main.swift`
+        // referencing a type defined in `Core/Counter.swift`) and produce
+        // wrong references.
         let astOutcome = try await invocation.run(
             modeArgs: ["-dump-ast"],
-            inputFiles: [absolutePath],
+            inputFiles: resolved.inputFiles,
             outputFile: nil,
-            options: .init(target: target)
+            options: .init(target: target, moduleName: resolved.moduleName)
         )
-        let astText = astOutcome.process.standardOutput
+        // Channel fallback: single-file `swiftc -dump-ast` writes the AST to
+        // stdout, but multi-file invocations route the entire AST to stderr
+        // and leave stdout empty. We prefer whichever channel actually carries
+        // the `(source_file …)` payload — stdout when non-empty, otherwise
+        // stderr. This is a Swift-toolchain quirk confirmed against
+        // 6.3.x; revisit if a future probe shows convergence.
+        let astText: String
+        if !astOutcome.process.standardOutput.isEmpty {
+            astText = astOutcome.process.standardOutput
+        } else {
+            astText = astOutcome.process.standardError
+        }
 
         let index = DeclIndex.build(astText: astText)
         let startEntry = try selectStartEntry(index: index, functionName: functionName)
@@ -124,23 +156,38 @@ public struct SliceFunctionTool: MCPTool {
         let graph = DependencyGraph(index: index, astText: astText)
         let graphOutput = graph.transitiveClosure(startingAt: startEntry)
 
-        let mapper = SourceRangeMapper(source: source)
         var pieces: [String] = []
         if includeImports {
-            let importBlock = importLines(from: source)
-            if !importBlock.isEmpty {
-                pieces.append(importBlock)
+            // Collect imports across every input file, then dedupe and sort
+            // so the slice opens with a single canonical block. Without
+            // deduping, a directory input with `import Foundation` in five
+            // files would emit five copies.
+            var seenImports: Set<String> = []
+            var importLinesList: [String] = []
+            for (_, source) in sourcesByPath.sorted(by: { $0.key < $1.key }) {
+                for line in importLinesArray(from: source) where !seenImports.contains(line) {
+                    seenImports.insert(line)
+                    importLinesList.append(line)
+                }
+            }
+            if !importLinesList.isEmpty {
+                pieces.append(importLinesList.joined(separator: "\n"))
             }
         }
-        // Two decls can share a physical line (e.g. `typealias Foo = Int; typealias
-        // Bar = String`) or overlap (a top-level `let` and a multi-line `func` whose
-        // first line carries both). Naively substringing each entry would emit the
-        // shared line twice. Merge the closure's source ranges first so each line is
-        // rendered exactly once.
-        let mergedRanges = Self.mergeOverlappingRanges(graphOutput.closure)
-        for range in mergedRanges {
-            if let text = mapper.substringForLines(startLine: range.lowerBound, endLine: range.upperBound) {
-                pieces.append(text)
+        // Group closure entries by source file. Each file gets its own
+        // merge-and-render pass (line numbers are per-file, so a single global
+        // merge would conflate ranges across files). Files are emitted in a
+        // stable order — sorted by path — so callers get a deterministic slice.
+        let entriesByFile = Dictionary(grouping: graphOutput.closure) { $0.filePath }
+        for filePath in entriesByFile.keys.sorted() {
+            let fileEntries = entriesByFile[filePath] ?? []
+            guard let source = sourcesByPath[filePath] else { continue }
+            let mapper = SourceRangeMapper(source: source)
+            let mergedRanges = Self.mergeOverlappingRanges(fileEntries)
+            for range in mergedRanges {
+                if let text = mapper.substringForLines(startLine: range.lowerBound, endLine: range.upperBound) {
+                    pieces.append(text)
+                }
             }
         }
         let slicedCode = pieces.joined(separator: "\n\n") + "\n"
@@ -152,6 +199,7 @@ public struct SliceFunctionTool: MCPTool {
 
         let included = graphOutput.closure.map { entry in
             IncludedSymbol(
+                filePath: entry.filePath,
                 name: entry.name,
                 signatureKey: entry.signatureKey,
                 kind: entry.kind,
@@ -228,15 +276,14 @@ public struct SliceFunctionTool: MCPTool {
         return merged
     }
 
-    private func importLines(from source: String) -> String {
-        let imports = source
+    private func importLinesArray(from source: String) -> [String] {
+        source
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
             .filter { line in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 return trimmed.hasPrefix("import ")
             }
-        return imports.joined(separator: "\n")
     }
 
     private func verify(

@@ -21,7 +21,7 @@ struct ReferenceCollectorTests {
 
     @Test
     func extractsValueAndTypeReferencesWithinRange() {
-        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 5...8)
+        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 5...8, enclosingFile: "/tmp/sample.swift")
         let names = Set(refs.map(\.name))
         #expect(names.contains("formatLabel"))
         #expect(names.contains("Counter"))   // value reference inside member_ref's declref
@@ -32,7 +32,7 @@ struct ReferenceCollectorTests {
     func excludesLocalBindings() {
         // `counter` is a parameter declared at line 5:18 — its decl line falls inside
         // the enclosing 5...8 range, so it must be filtered out.
-        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 5...8)
+        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 5...8, enclosingFile: "/tmp/sample.swift")
         let names = Set(refs.map(\.name))
         #expect(names.contains("counter") == false)
     }
@@ -41,10 +41,39 @@ struct ReferenceCollectorTests {
     func ignoresNodesOutsideEnclosingRange() {
         // Restricting to lines 6...6 should still catch `formatLabel` (declref on line 6)
         // but not the type_unqualified_ident on line 7.
-        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 6...6)
+        let refs = ReferenceCollector.collect(astText: sampleAST, enclosing: 6...6, enclosingFile: "/tmp/sample.swift")
         let names = Set(refs.map(\.name))
         #expect(names.contains("formatLabel"))
         #expect(names.contains("String") == false)
+    }
+
+    /// Multi-file AST: two source_file blocks sharing line numbers.
+    /// `formatLabel` lives at line 6 of `/tmp/A.swift`; `unrelated` lives at
+    /// the same line of `/tmp/B.swift`. With the file filter the collector
+    /// must only return references from the file we asked about — without
+    /// it, slice_function on a directory input would mix references from
+    /// peer files that happen to share line numbers.
+    @Test
+    func filtersByEnclosingFileEvenAcrossSharedLineNumbers() {
+        let multiFileAST = #"""
+        (source_file "/tmp/A.swift"
+          (func_decl range=[/tmp/A.swift:5:1 - line:8:1] "describe(_:)" interface_type="() -> String"
+            (call_expr type="String" range=[/tmp/A.swift:6:5 - line:6:18]
+              (declref_expr range=[/tmp/A.swift:6:5 - line:6:5] decl="sample.(file).formatLabel(_:)@/tmp/A.swift:11:6" function_ref=single))))
+        (source_file "/tmp/B.swift"
+          (func_decl range=[/tmp/B.swift:5:1 - line:8:1] "explain(_:)" interface_type="() -> Int"
+            (call_expr type="Int" range=[/tmp/B.swift:6:5 - line:6:18]
+              (declref_expr range=[/tmp/B.swift:6:5 - line:6:5] decl="sample.(file).unrelated(_:)@/tmp/B.swift:11:6" function_ref=single))))
+        """#
+        let refsA = ReferenceCollector.collect(astText: multiFileAST, enclosing: 5...8, enclosingFile: "/tmp/A.swift")
+        let namesA = Set(refsA.map(\.name))
+        #expect(namesA.contains("formatLabel"))
+        #expect(namesA.contains("unrelated") == false)
+
+        let refsB = ReferenceCollector.collect(astText: multiFileAST, enclosing: 5...8, enclosingFile: "/tmp/B.swift")
+        let namesB = Set(refsB.map(\.name))
+        #expect(namesB.contains("unrelated"))
+        #expect(namesB.contains("formatLabel") == false)
     }
 
     @Test

@@ -29,41 +29,56 @@ public enum ReferenceCollector {
     // non-quote up to the `@` delimiter that introduces the location suffix.
     nonisolated(unsafe) private static let declWithLocationPattern = #/decl="([^"]+?)@([^":]+):(\d+):(\d+)"/#
     nonisolated(unsafe) private static let typeIdentPattern = #/\(type_unqualified_ident\b.*?id="([^"]+)"/#
-    nonisolated(unsafe) private static let nodeRangePattern = #/range=\[[^:]+:(\d+):\d+ - line:(\d+):\d+\]/#
+    /// Captures the source file plus start line from any `range=[…]` attribute.
+    /// Multi-file dump-ast emits `range=[/abs/path/file.swift:sl:sc - line:el:ec]`,
+    /// so the file path is the leading non-`:` run.
+    nonisolated(unsafe) private static let nodeRangePattern = #/range=\[([^:]+):(\d+):\d+ - line:(\d+):\d+\]/#
 
-    /// Collect references from AST nodes whose own range starts inside `enclosing`.
-    /// `localRange` should be the same as `enclosing` when the caller wants a single
-    /// decl's references; pass a wider range when collecting across a slice.
+    /// Collect references from AST nodes whose own range starts inside `enclosing`
+    /// AND whose source file matches `enclosingFile`. The file filter is what makes
+    /// multi-file slicing safe — without it, line 5 in `A.swift` and line 5 in
+    /// `B.swift` would both match the same line range and references from the
+    /// other file would leak into the closure.
     public static func collect(
         astText: String,
-        enclosing: ClosedRange<Int>
+        enclosing: ClosedRange<Int>,
+        enclosingFile: String
     ) -> Set<Reference> {
         var refs: Set<Reference> = []
         // Many AST nodes (e.g. `type_unqualified_ident`, `pattern_named`) carry no
         // range= of their own — they belong to whichever parent node was opened most
-        // recently. We track that by remembering the start line of the last node
-        // whose range= we did parse, and inheriting it as the "current line" for
-        // subsequent unanchored siblings.
-        var currentNodeStart: Int? = nil
+        // recently. We track that by remembering the (file, startLine) pair of the
+        // last node whose range= we did parse, and inheriting it as the "current
+        // anchor" for subsequent unanchored siblings.
+        var currentAnchor: (file: String, line: Int)? = nil
 
         for rawLine in astText.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(rawLine)
-            if let parsed = parseNodeStartLine(line) {
-                currentNodeStart = parsed
+            if let parsed = parseNodeStartAnchor(line) {
+                currentAnchor = parsed
             }
-            // Filter: skip lines whose effective node-start is outside the slice. If
-            // we have no anchor at all (very early in the AST text), we play it safe
+            // Filter: skip lines whose effective anchor is outside the slice. We
+            // require both the file path and the line range to match — anchors
+            // from other files in the same multi-file dump are off-topic. If we
+            // have no anchor at all (very early in the AST text), we play it safe
             // and skip.
-            guard let anchor = currentNodeStart, enclosing.contains(anchor) else { continue }
+            guard let anchor = currentAnchor,
+                  anchor.file == enclosingFile,
+                  enclosing.contains(anchor.line)
+            else { continue }
 
             // Any decl="…@file:line:col" attribute — picks up declref_expr,
             // member_ref_expr, dynamic_member_ref_expr, etc. uniformly.
             for match in line.matches(of: declWithLocationPattern) {
                 let mangledChain = String(match.output.1)
+                let declFile = String(match.output.2)
                 let declFileLine = Int(match.output.3) ?? 0
                 // Skip references whose declaration site is itself inside the slice
-                // — those are local bindings (parameters, let, inner func).
-                if enclosing.contains(declFileLine) { continue }
+                // — those are local bindings (parameters, let, inner func). Only
+                // skip when the decl site lives in the *same* file as the slice; a
+                // peer-file decl on a coincidentally-overlapping line is a
+                // legitimate cross-file dependency we still need to follow.
+                if declFile == enclosingFile, enclosing.contains(declFileLine) { continue }
                 let extracted = baseName(fromDeclChain: mangledChain)
                 if !extracted.isEmpty {
                     refs.insert(.init(name: extracted, kind: .value))
@@ -81,11 +96,11 @@ public enum ReferenceCollector {
         return refs
     }
 
-    private static func parseNodeStartLine(_ line: String) -> Int? {
+    private static func parseNodeStartAnchor(_ line: String) -> (file: String, line: Int)? {
         guard let match = try? nodeRangePattern.firstMatch(in: line),
-              let start = Int(match.output.1)
+              let start = Int(match.output.2)
         else { return nil }
-        return start
+        return (file: String(match.output.1), line: start)
     }
 
     /// Extract the base name from a swiftc decl chain. Examples:
