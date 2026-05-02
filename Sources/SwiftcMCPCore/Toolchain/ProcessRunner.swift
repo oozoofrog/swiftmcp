@@ -254,6 +254,110 @@ public func runProcessWithTimeoutDiscardingOutput(
     return result
 }
 
+/// Wall-clock-bounded process run that captures stdout *and* stderr into a single
+/// on-disk file at `logURL`. Used when we need both the SWBBuildService-hang
+/// resilience of `runProcessWithTimeoutDiscardingOutput` AND the ability to
+/// inspect xcodebuild's stdout afterwards (e.g. parsing
+/// `-showBuildTimingSummary`). Routing both streams to a file means there is
+/// no pipe to wedge — even if SWBBuildService keeps the inherited FD open
+/// past `BUILD SUCCEEDED`, the parent never blocks reading; the kernel
+/// flushes child writes to the file and we read the path post-exit.
+///
+/// Cancellation contract matches the discarding variant: parent-task cancel
+/// → PIDHolder SIGTERM → optional SIGKILL escalation → `Task.checkCancellation()`
+/// throws `CancellationError` so callers don't continue on a torn-down child.
+///
+/// Returns `(exitCode, timedOut)`. The log file is created with the parent's
+/// permissions; callers typically pass a `PersistentScratch` URL so the file
+/// stays around for the response payload.
+public func runProcessWithTimeoutLoggingTo(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]? = nil,
+    workingDirectory: URL? = nil,
+    logURL: URL,
+    timeout: TimeInterval
+) async throws -> (exitCode: Int32, timedOut: Bool) {
+    // Create / truncate the log file before spawning so the child has a
+    // valid FD to inherit. We hand the FileHandle (write end) to the child;
+    // the parent doesn't need it once the process is launched.
+    let fm = FileManager.default
+    if !fm.fileExists(atPath: logURL.path) {
+        fm.createFile(atPath: logURL.path, contents: nil, attributes: nil)
+    } else {
+        // Truncate any prior content so reruns don't accumulate.
+        try Data().write(to: logURL)
+    }
+    let logHandle: FileHandle
+    do {
+        logHandle = try FileHandle(forWritingTo: logURL)
+    } catch {
+        throw ProcessRunnerError.launchFailed("cannot open log file at \(logURL.path): \(error)")
+    }
+
+    let holder = PIDHolder()
+    let result = try await withTaskCancellationHandler {
+        try await Task.detached { @Sendable in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            if let environment {
+                process.environment = environment
+            }
+            if let workingDirectory {
+                process.currentDirectoryURL = workingDirectory
+            }
+            process.standardOutput = logHandle
+            process.standardError = logHandle
+            // Sever stdin inheritance for the same reason runProcess does.
+            process.standardInput = FileHandle.nullDevice
+
+            do {
+                try process.run()
+            } catch {
+                throw ProcessRunnerError.launchFailed("\(error)")
+            }
+
+            await holder.set(process.processIdentifier)
+            defer {
+                Task { await holder.clear() }
+            }
+
+            let pollInterval: TimeInterval = 0.05
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+            }
+
+            var timedOut = false
+            if process.isRunning {
+                timedOut = true
+                process.terminate()
+                let graceDeadline = Date().addingTimeInterval(1.0)
+                while process.isRunning && Date() < graceDeadline {
+                    try? await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+                }
+                #if canImport(Darwin)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                #endif
+                process.waitUntilExit()
+            }
+            // Close our writer end so any pending kernel buffers flush
+            // before the caller reads the file. The child process inherits
+            // its own copy of the FD via posix_spawn, so closing ours
+            // doesn't disturb anything that's already exited.
+            try? logHandle.close()
+            return (process.terminationStatus, timedOut)
+        }.value
+    } onCancel: {
+        Task { await holder.markCancelled() }
+    }
+    try Task.checkCancellation()
+    return result
+}
+
 /// Same as `runProcess` but enforces a wall-clock timeout. On expiry the process
 /// receives `SIGTERM`; if it ignores the signal for 1 second we escalate to `SIGKILL`.
 /// Parent-task cancellation is propagated to the child via SIGTERM (see `PIDHolder`).

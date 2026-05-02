@@ -630,9 +630,28 @@ Fixture(`Tests/Fixtures/SampleProject.xcodeproj`, `Tests/Fixtures/BrokenProject.
 - **verify 단계도 같은 옵션이 필요** (Codex 두 번째 후속 지적): dump-ast가 옵션을 받아도 slice의 self-typecheck (`verify(slicedCode:)`)가 옵션 없이 호출되면, slice에 보존된 `import Core` 라인이 `-I` 부재로 해석 실패 → false `compilerExitCode != 0` 보고. SwiftPMPackageResolver가 분석 대상 target만 inputFiles로 반환하므로 dep 모듈은 외부로 남고, 그 외부 import 라인이 verify에서 문제. `verify(slicedCode:resolved:)`로 시그니처 변경, typecheck/dump-ast 둘 다 `Options(resolved:)` 사용.
 - **DispatchGroup pipe drain via 비동기 continuation**: 1차 시도의 sequential `readDataToEndOfFile`은 multi-file dump-ast의 stderr-heavy 출력에서 buffer 풀링으로 deadlock. `Task.detached { sync_blocking_call }.value` 패턴은 동작하긴 하나 다수 동시 호출에서 cooperation 풀 starvation 의심. 최종 형태: `withCheckedContinuation` + DispatchGroup notify로 두 글로벌 큐 블록 동시 drain → cooperation 풀에 부담 주지 않음. `DataBox`(`@unchecked Sendable` final class) 도입은 `var Data`를 `@Sendable` 클로저에 캡처할 수 없는 Swift 6 strict concurrency 우회용 — DispatchGroup의 happens-before가 동기화 보장.
 
+### Stage 4-5 (완료) — `xcbuild_perf`: Xcode 빌드 성능 분석
+
+277 tests / 52 suites 통과 + 1 통합 테스트 환경 의존으로 skip 표시 (총 +19 enabled, +1 disabled). 도구 14 → 15.
+
+수행 작업:
+1. ✓ `Toolchain/BuildTimingSummaryParser.swift` — `xcodebuild -showBuildTimingSummary`의 stdout 텍스트 섹션을 `[Phase]`로 파싱. `<Name> (<n> tasks) | <wall> seconds` 변형(`s` suffix, 헤더 누락, BUILD FAILED, 다음 섹션 마커, stray-line tolerance 등) 8 단위 테스트.
+2. ✓ `Toolchain/XclogparserOutputParser.swift` — `xclogparser parse --reporter json`의 BuildStep 트리에서 `type=="target"` 노드 추출, sub-step title prefix(`CompileSwift…`, `Ld…`)로 compile/link 버킷 합산, baseTimestamp 기준 상대 offset 계산. 6 단위 테스트 (synthetic JSON, xclogparser 미설치 환경에서도 결정적).
+3. ✓ `Toolchain/ProcessRunner.swift::runProcessWithTimeoutLoggingTo(file:)` — stdio를 디스크 FileHandle로 redirect → SWBBuildService stdio-hang 회피. `runProcessWithTimeoutDiscardingOutput`과 동일한 PIDHolder + cancel + `Task.checkCancellation()` 계약. cancel 단위 테스트 1.
+4. ✓ `Tools/XcbuildPerf.swift` — xcode-only 입력 검증 → PersistentScratch 격리(derivedDataPath/objroot/symroot/resultBundlePath/build.log) → 5분 timeout으로 xcodebuild 호출 → BuildTimingSummaryParser → xclogparser PATH 가용 시 `xcactivitylog` 찾아 augment → JSON 응답.
+5. ✓ Mcpswx 등록 (도구 15).
+6. ✓ 입력 검증 테스트 4 (`.file`/`.directory`/`.swiftPMPackage`/nil 모두 invalidParams) + SampleProject 통합 1.
+
+학습 사항:
+- **`-derivedDataPath`은 `-scheme` 강제**: project 모드에서도 `-target` 만으로는 안 되고 `-scheme`이 필수 (xcodebuild이 즉시 에러). Xcode 프로젝트의 auto-generated scheme명이 target명과 일치한다는 컨벤션을 가정해 BuildInput.xcodeProject의 `targetName`을 `-scheme` 인자로 전달. 이 관습이 깨진 프로젝트는 `xcode_workspace` 입력을 쓰거나 후속에서 별도 scheme 필드 추가.
+- **Resolver는 perf 도구의 friend가 아님**: `BuildArgsResolver.resolveArgs`는 SwiftFileList 추출을 위해 자체 xcodebuild build를 한 번 더 돌리는데, 이는 SWBBuildService stdio-hang에 정면 노출 + perf 측정에 불필요. xcbuild_perf는 BuildInput만으로 직접 xcodebuild을 spawn → resolver 호출 자체를 우회. 도구 init 시그니처에 `resolver:`를 받지만 의도적 미사용 (Mcpswx 등록 shape 통일을 위해 유지).
+- **stdio nullDevice가 아니라 file-redirect**: `runProcessWithTimeoutDiscardingOutput`은 stdio를 버려 결과를 못 읽지만, `-showBuildTimingSummary` 결과는 stdout 끝에 출력되므로 캡처해야 함. 동시에 SWBBuildService FD-leak 회피도 필요. file-redirect는 두 요구를 모두 만족 — 디스크에 쓰니 pipe-buffer 풀링 없음, 파일 경로로 post-hoc 읽기 가능. 새 헬퍼 `runProcessWithTimeoutLoggingTo(file:)`이 그 패턴을 PIDHolder + cancel 계약과 함께 캡슐화.
+- **xclogparser는 PATH-가용 시 graceful augment**: 외부 의존을 강제하지 않는 패턴 — `/usr/bin/env which xclogparser`로 가용성 확인, 가용하면 per-target rollup 추가, 미가용이면 `xclogparserAvailable: false` + `targetTimings: null`로 응답하고 도구는 정상 succeed. `BuildTimingSummaryParser` per-command-class 데이터는 항상 보장.
+- **응답 schema의 path-vs-inline 정책**: 큰 산출물(build.log, result.xcresult)은 항상 PersistentScratch 경로로만 노출. xclogparser 원본 JSON은 1차에서 응답에 inline 안 함 (압박 회피) — 후속에서 옵션으로 노출 가능.
+- **macOS 26.x SWBBuildService contention은 integration 테스트의 결정성을 깨뜨림**: SampleProject self-build 통합 테스트가 idle 호스트에선 통과하나, 사용자 다른 xcodebuild(예: Papers test) 동시 실행 시 SDK-probe 단계(`ExecuteExternalTool clang`)에서 10분+ 멈춤. swift-testing의 `.disabled("…")` trait로 default skip 처리 + 깨끗한 환경에서 수동 실행하도록 메시지에 명시. 단위 테스트 19개로 기능 검증은 충분 (parser 결정성 + 입력 검증 + cancel 전파).
+
 ### Stage 4 후속 후보 (윤곽만)
 
-- Workspace build perf (`xcbuild_perf`) — xcactivitylog 자체 파서.
 - Stage 4-2b 후속: `slice_function`의 xcodeProject/xcodeWorkspace 입력 — Xcode가 결정한 inputFiles를 dump-ast에 그대로 흘리는 경로 + 환경 변수 검증.
 - Stage 4-4b 후속 (관찰): xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framework). 현재 `XcodebuildResolver`가 frameworkSearchPaths를 빈 배열로 반환 → import 해석 실패 가능. SampleProject는 dep 없는 static lib라 통과. 후속에서 xcodebuild build 결과의 `<SYMROOT>/<config>/` 또는 OBJROOT의 모듈 경로를 frameworkSearchPaths로 채워야 함.
 

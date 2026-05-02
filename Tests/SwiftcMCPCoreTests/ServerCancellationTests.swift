@@ -114,6 +114,50 @@ struct DiscardingOutputCancellationTests {
     }
 }
 
+/// Same cancel-propagation guard as runProcessWithTimeoutDiscardingOutput,
+/// but for the file-logging variant used by xcbuild_perf. The contract is
+/// identical (parent-task cancel → SIGTERM child → CancellationError thrown
+/// out of the helper), and the helper re-uses the same PIDHolder pattern,
+/// so we just need a smoke test confirming the wiring is intact.
+@Suite("runProcessWithTimeoutLoggingTo cancellation")
+struct LoggingProcessCancellationTests {
+    @Test
+    func parentTaskCancelTerminatesLoggingChild() async throws {
+        let scratchURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("swiftmcp-logtest-\(UUID().uuidString).log")
+        defer {
+            try? FileManager.default.removeItem(at: scratchURL)
+        }
+
+        let task = Task {
+            try await runProcessWithTimeoutLoggingTo(
+                executable: "/bin/sleep",
+                arguments: ["60"],
+                logURL: scratchURL,
+                timeout: 60
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelStart = Date()
+        task.cancel()
+
+        var caughtCancellation = false
+        do {
+            _ = try await task.value
+        } catch is CancellationError {
+            caughtCancellation = true
+        } catch {
+            // Other thrown errors still pass the wall-clock check below;
+            // CancellationError is the contracted form but we don't fail
+            // hard on alternative cancel surfaces.
+        }
+        let elapsed = Date().timeIntervalSince(cancelStart)
+        #expect(elapsed < 7.0, "cancellation should propagate well before the 60s timeout, got \(elapsed)s")
+        #expect(caughtCancellation, "expected CancellationError to propagate so callers stop after SIGTERM")
+    }
+}
+
 @Suite("BuildIsolatedSnippet cancellation (integration)")
 struct BuildIsolatedSnippetCancellationTests {
     @Test
