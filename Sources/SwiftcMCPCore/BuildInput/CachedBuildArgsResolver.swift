@@ -73,6 +73,22 @@ public actor CachedBuildArgsResolver: BuildArgsResolver {
     }
 
     public func resolveArgs(for input: BuildInput) async throws -> ResolvedBuildArgs {
+        // xcode inputs bypass the cache entirely. The resolver's `inputFiles`
+        // for an Xcode target only lists *that target's* SwiftFileList — sources
+        // belonging to dependency targets (sibling frameworks the target imports)
+        // never appear there. A cache hit therefore short-circuits the
+        // xcodebuild invocation that would have rebuilt the dependency targets'
+        // `.swiftmodule` artifacts, so `frameworkSearchPaths` keeps pointing at
+        // a stale `.framework` even when the dep target's source has changed
+        // — silently freezing api_diff / slice_function / dump-ast against
+        // an outdated dep API. xcodebuild is itself incremental, so paying its
+        // overhead on every call is the correctness-first trade.
+        switch input {
+        case .xcodeProject, .xcodeWorkspace:
+            return try await wrapped.resolveArgs(for: input)
+        case .file, .directory, .swiftPMPackage:
+            break
+        }
         if let entry = cache[input], isStillValid(entry, for: input) {
             return entry.resolved
         }

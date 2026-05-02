@@ -674,6 +674,7 @@ xcode 입력에서 *user framework dependency*가 있을 때(예: App→Framewor
 학습 사항:
 - **BUILT_PRODUCTS_DIR vs CONFIGURATION_BUILD_DIR vs FRAMEWORK_SEARCH_PATHS**: 호스트 probe에서 셋 다 동일 값 (`<SYMROOT>/Debug`). `BUILT_PRODUCTS_DIR`이 가장 직접적인 의미("이번 빌드가 frameworks를 떨군 곳") + 단일 경로라 split 불필요. `FRAMEWORK_SEARCH_PATHS`는 사용자 설정 + 자동 추가로 합성되며 공백 split이 필요해 후속 옵션. 현재는 BUILT_PRODUCTS_DIR 단일.
 - **chosen.settings는 이미 모든 키를 노출**: `parseBuildSettings`가 KEY=VALUE를 그대로 dictionary에 저장하므로 새 키 추출에 파서 변경 0. 기존 SDKROOT/SWIFT_VERSION 추출 패턴(`if let sdk = settings["SDKROOT"]`)을 그대로 차용.
+- **xcode 입력은 캐시 비활성화** (Codex 후속 지적): `XcodebuildResolver.inputFiles`는 분석 대상 *target*의 SwiftFileList만 담고, dependency framework(Foo)의 소스는 그 안에 없음. 캐시가 inputFiles fingerprint만 보면 Foo의 소스 변화를 감지 못함 → cache hit가 xcodebuild 호출을 건너뛰니 Foo.swiftmodule도 갱신 안 됨 → `frameworkSearchPaths`가 stale framework 가리킴 → api_diff/slice_function이 outdated dep API에 대해 분석. 가장 안전한 fix: `CachedBuildArgsResolver.resolveArgs`가 `.xcodeProject`/`.xcodeWorkspace`를 받으면 무조건 wrapped resolver 직접 호출 (캐시 저장 안 함). xcodebuild이 자체적으로 incremental이라 cost는 bounded. 회귀 테스트 `bypassesCacheForXcodeProjectInput`/`bypassesCacheForXcodeWorkspaceInput`이 두 호출 모두 wrapped resolver에 도달함을 검증.
 
 ### Stage 4 후속 후보 (윤곽만)
 

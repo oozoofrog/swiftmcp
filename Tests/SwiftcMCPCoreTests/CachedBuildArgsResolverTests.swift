@@ -613,6 +613,65 @@ struct CachedBuildArgsResolverUnitTests {
         #expect(await counting.callCount == 2)
     }
 
+    /// Per Codex stop-time review (Stage 4-4c follow-up): xcode inputs must
+    /// bypass the cache entirely. The xcode resolver's `inputFiles` only
+    /// lists the *analysis target's* SwiftFileList — sources belonging to
+    /// dependency frameworks (siblings the target imports) never appear,
+    /// so the fingerprint can't observe their changes. A cache hit there
+    /// freezes `frameworkSearchPaths` against a stale `.framework` and
+    /// silently corrupts every downstream tool that consumes
+    /// `ResolvedBuildArgs`. We pay the xcodebuild overhead on every call
+    /// for correctness; xcodebuild is itself incremental so the cost is
+    /// bounded.
+    @Test
+    func bypassesCacheForXcodeProjectInput() async throws {
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: ["/tmp/Sample.swift"],
+            moduleName: "Sample"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.xcodeProject(
+            path: "/tmp/SampleProject.xcodeproj",
+            targetName: "Sample",
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        _ = try await cache.resolveArgs(for: input)
+
+        // Both calls must reach the wrapped resolver — caching xcode is
+        // unsafe and the cache layer should refuse to memoize.
+        #expect(await counting.callCount == 2)
+        // Belt-and-suspenders: the cache table itself must stay empty for
+        // the xcode key, so a future regression that "just adds" caching
+        // back also gets caught.
+        let count = await cache.cachedEntryCount()
+        #expect(count == 0)
+    }
+
+    @Test
+    func bypassesCacheForXcodeWorkspaceInput() async throws {
+        let counting = CountingResolver(StaticPackageResolver(
+            inputFiles: ["/tmp/Sample.swift"],
+            moduleName: "Sample"
+        ))
+        let cache = CachedBuildArgsResolver(wrapping: counting)
+        let input = BuildInput.xcodeWorkspace(
+            path: "/tmp/SampleWorkspace.xcworkspace",
+            scheme: "Sample",
+            targetName: nil,
+            configuration: nil,
+            target: nil
+        )
+
+        _ = try await cache.resolveArgs(for: input)
+        _ = try await cache.resolveArgs(for: input)
+        #expect(await counting.callCount == 2)
+        let count = await cache.cachedEntryCount()
+        #expect(count == 0)
+    }
+
     @Test
     func validCacheReturnsEqualValue() async throws {
         let scratch = try CallScratch()
