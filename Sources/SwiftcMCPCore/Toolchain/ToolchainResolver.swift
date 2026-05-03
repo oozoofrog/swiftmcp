@@ -29,9 +29,16 @@ public actor ToolchainResolver {
     }
 
     /// Resolves the macOS SDK path via `xcrun --sdk macosx --show-sdk-path`. Result is
-    /// cached (including the failure case as `nil`). Used by `SwiftcInvocation` to seed
+    /// cached — including the legitimate "no SDK available" outcome as `nil` — so the
+    /// xcrun probe runs at most once per resolver. Used by `SwiftcInvocation` to seed
     /// `SDKROOT` in the child's environment when the host shell hasn't set it — the
     /// scenario when `mcpswx` runs as a CLI outside `swift test` / Xcode.
+    ///
+    /// Cancellation does *not* poison the cache: `firstNonEmptyPath` swallows
+    /// `CancellationError` from `runProcess` into `nil`, so a cancelled-mid-probe
+    /// resolution would otherwise be cached as a permanent fallback. We re-check
+    /// `Task.isCancelled` after the call and skip caching in that case so a subsequent
+    /// uncancelled call retries the probe.
     public func sdkPath() async -> String? {
         if let cachedSDKPath {
             return cachedSDKPath
@@ -40,6 +47,7 @@ public actor ToolchainResolver {
             executable: "/usr/bin/xcrun",
             arguments: ["--sdk", "macosx", "--show-sdk-path"]
         )
+        if Task.isCancelled { return resolved }
         cachedSDKPath = .some(resolved)
         return resolved
     }
