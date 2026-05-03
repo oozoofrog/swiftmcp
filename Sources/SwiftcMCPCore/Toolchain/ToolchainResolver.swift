@@ -13,6 +13,7 @@ public actor ToolchainResolver {
     }
 
     private var cached: Resolved?
+    private var cachedSDKPath: String??
 
     public init() {}
 
@@ -24,6 +25,22 @@ public actor ToolchainResolver {
         let version = try await readVersion(swiftcPath: path)
         let resolved = Resolved(swiftcPath: path, version: version)
         cached = resolved
+        return resolved
+    }
+
+    /// Resolves the macOS SDK path via `xcrun --sdk macosx --show-sdk-path`. Result is
+    /// cached (including the failure case as `nil`). Used by `SwiftcInvocation` to seed
+    /// `SDKROOT` in the child's environment when the host shell hasn't set it — the
+    /// scenario when `mcpswx` runs as a CLI outside `swift test` / Xcode.
+    public func sdkPath() async -> String? {
+        if let cachedSDKPath {
+            return cachedSDKPath
+        }
+        let resolved = try? await firstNonEmptyPath(
+            executable: "/usr/bin/xcrun",
+            arguments: ["--sdk", "macosx", "--show-sdk-path"]
+        )
+        cachedSDKPath = .some(resolved)
         return resolved
     }
 

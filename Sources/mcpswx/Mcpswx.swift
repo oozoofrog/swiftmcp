@@ -9,6 +9,7 @@ struct Mcpswx {
         let registry = ToolRegistry()
         await registry.register(PrintTargetInfoTool(toolchain: toolchain))
         await registry.register(FindSlowTypecheckTool(toolchain: toolchain, resolver: cachedResolver))
+        await registry.register(DebugTimeTypecheckTool(toolchain: toolchain, resolver: cachedResolver))
         await registry.register(EmitASTTool(toolchain: toolchain, resolver: cachedResolver))
         await registry.register(EmitSILTool(toolchain: toolchain, resolver: cachedResolver))
         await registry.register(EmitIRTool(toolchain: toolchain, resolver: cachedResolver))

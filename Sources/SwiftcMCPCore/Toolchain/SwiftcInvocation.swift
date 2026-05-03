@@ -109,9 +109,22 @@ public struct SwiftcInvocation: Sendable {
         args.append(contentsOf: inputFiles)
         let processResult = try await runProcess(
             executable: resolved.swiftcPath,
-            arguments: args
+            arguments: args,
+            environment: await childEnvironment()
         )
         return Outcome(process: processResult, toolchain: resolved)
+    }
+
+    // On macOS 26 / Xcode 26, swiftc invoked outside of `xcrun` / `swift test` cannot
+    // locate the standard library unless `SDKROOT` is set in its environment. Inherit
+    // the parent env and seed `SDKROOT` from `xcrun --sdk macosx --show-sdk-path` only
+    // when the host shell hasn't already exported it.
+    private func childEnvironment() async -> [String: String]? {
+        var env = ProcessInfo.processInfo.environment
+        guard env["SDKROOT"] == nil else { return nil }
+        guard let sdk = await resolver.sdkPath() else { return nil }
+        env["SDKROOT"] = sdk
+        return env
     }
 }
 
